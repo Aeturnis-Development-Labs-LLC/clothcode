@@ -121,6 +121,124 @@ def build_skirt(spec, collection=None):
     return obj, waist
 
 
+def _sew_waistband(bm, panels, edges_of, waist):
+    """Build a pinned circular waistband ring and sew each panel's top edge to the
+    matching arc (front panel y>=0 -> +Y arc, back panel y<0 -> -Y arc), sharing
+    the two side points with the side seams. Returns the ring verts (to be pinned).
+    Assumes one front + one back panel (the tube); generalises later for M3."""
+    rw, zr = waist["radius"], waist["z"]
+    fp = next(k for k, p in enumerate(panels) if p["center"][1] >= 0)
+    bp = next(k for k, p in enumerate(panels) if p["center"][1] < 0)
+    nu = panels[fp]["res"][0]
+    Rf = []
+    for i in range(nu + 1):
+        a = math.pi * (1 - i / nu)              # left (pi) -> right (0) via +Y
+        Rf.append(bm.verts.new((rw * math.cos(a), rw * math.sin(a), zr)))
+    Rb = [None] * (nu + 1)
+    Rb[0], Rb[nu] = Rf[0], Rf[nu]               # side points shared with the seams
+    for i in range(1, nu):
+        a = math.pi * (1 + i / nu)              # left (pi) -> right (2pi) via -Y
+        Rb[i] = bm.verts.new((rw * math.cos(a), rw * math.sin(a), zr))
+    loop = Rf + [Rb[i] for i in range(1, nu)]
+    for k in range(len(loop)):                  # closed ring edges (the waistband)
+        try:
+            bm.edges.new((loop[k], loop[(k + 1) % len(loop)]))
+        except ValueError:
+            pass
+    for u, v in list(zip(edges_of[fp]["T"], Rf)) + list(zip(edges_of[bp]["T"], Rb)):
+        if u is not v:                          # sew panel tops up to the ring
+            try:
+                bm.edges.new((u, v))
+            except ValueError:
+                pass
+    return loop
+
+
+def build_garment(panels, seams, pins=None, waist=None, name="Garment", collection=None):
+    """Sew a garment from flat 2D panels (the general, pattern-based builder).
+
+    panels: list of flat sheets, each a dict:
+        w, h           - panel width and height
+        res=(nu, nv)   - grid resolution (columns x rows)
+        center=(x,y,z) - centre of the sheet in world space
+        normal="Y"|"X" - axis the flat sheet faces; it spans the OTHER horizontal
+                         axis (width) and Z (height)
+        taper=1.0      - bottom-width / top-width (1.0 = rectangle)
+    seams: list of (a, b) or (a, b, flip) where a, b = (panel_index, edge) and
+        edge in {"L","R","T","B"}. The two edges' vertices are bridged one-for-one
+        with LOOSE edges - the cloth sewing springs that pull the seam shut.
+        `flip` reverses one side's vertex order.
+    pins: list of (panel_index, edge) whose vertices form the 'Pin' group.
+
+    Returns (obj, "Pin"). The caller adds a body collider + cloth with
+    add_cloth(..., sew=True) and bakes; the seams close during the sim.
+    """
+    collection = collection or U.get_collection(COL)
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+    bm = bmesh.new()
+    edges_of = []                       # per panel: {"L"/"R"/"T"/"B": [BMVert,...]}
+    for p in panels:
+        nu, nv = p["res"]
+        w, h = p["w"], p["h"]
+        cx, cy, cz = p["center"]
+        normal = p.get("normal", "Y")
+        taper = p.get("taper", 1.0)
+        g = [[None] * (nv + 1) for _ in range(nu + 1)]
+        for j in range(nv + 1):
+            tv = j / nv                 # 0 = bottom, 1 = top
+            z = cz - h / 2 + h * tv
+            wj = w * (taper + (1 - taper) * tv)
+            for i in range(nu + 1):
+                off = wj * (i / nu - 0.5)
+                co = (cx + off, cy, z) if normal == "Y" else (cx, cy + off, z)
+                g[i][j] = bm.verts.new(co)
+        for i in range(nu):
+            for j in range(nv):
+                bm.faces.new((g[i][j], g[i + 1][j], g[i + 1][j + 1], g[i][j + 1]))
+        edges_of.append({
+            "L": [g[0][j] for j in range(nv + 1)],
+            "R": [g[nu][j] for j in range(nv + 1)],
+            "B": [g[i][0] for i in range(nu + 1)],
+            "T": [g[i][nv] for i in range(nu + 1)],
+        })
+    # sewing: loose edges bridge matched seam vertices (no face uses them)
+    for seam in seams:
+        a, b = seam[0], seam[1]
+        flip = seam[2] if len(seam) > 2 else False
+        va = edges_of[a[0]][a[1]]
+        vb = edges_of[b[0]][b[1]]
+        if flip:
+            vb = list(reversed(vb))
+        for u, v in zip(va, vb):
+            if u is not v:
+                try:
+                    bm.edges.new((u, v))
+                except ValueError:
+                    pass                # edge already exists
+    # optional pinned waistband ring the panel tops sew up to
+    ring = _sew_waistband(bm, panels, edges_of, waist) if waist else []
+
+    bm.verts.index_update()
+    pin_idx = [v.index for v in ring]
+    for entry in (pins or []):
+        pi, edge = entry[0], entry[1]
+        drop = entry[2] if len(entry) > 2 else 0   # free this many verts at each end
+        verts = edges_of[pi][edge]
+        if drop:
+            verts = verts[drop:len(verts) - drop]
+        pin_idx += [v.index for v in verts]
+    bm.to_mesh(mesh)
+    bm.free()
+    U.link(obj, collection)
+    for poly in mesh.polygons:
+        poly.use_smooth = True
+    vg = obj.vertex_groups.new(name="Pin")
+    if pin_idx:
+        vg.add(sorted(set(pin_idx)), 1.0, 'REPLACE')
+    return obj, "Pin"
+
+
 def _collide(o, thickness=0.008):
     o.modifiers.new("Collision", 'COLLISION')
     o.collision.thickness_outer = thickness
@@ -171,11 +289,16 @@ def waist_bone(skirt, z_top, name="Driver", collection=None):
 # ---------------------------------------------------------------------------
 # Layer 3: simulation
 # ---------------------------------------------------------------------------
-def add_cloth(obj, pin_group="Waist", fabric=FABRIC, rest_key=None):
+def add_cloth(obj, pin_group="Waist", fabric=FABRIC, rest_key=None, sew=False):
     cl = obj.modifiers.new("Cloth", 'CLOTH')
     s = cl.settings
     s.vertex_group_mass = pin_group
     s.pin_stiffness = 1.0
+    if sew:
+        # pull loose seam edges shut (sewing springs); 0 = uncapped force. Verified
+        # functional headless in 5.2 (unlike rest_shape_key) - see docs/findings.md.
+        s.use_sewing_springs = True
+        s.sewing_force_max = 0.0
     if rest_key is not None:
         # use a separate shape key as the UNSTRETCHED reference, so the sim can
         # START from an already-draped Basis while keeping correct spring tension.
@@ -246,7 +369,7 @@ def _cloth_base_positions(obj):
     old = sub.show_viewport if sub else None
     if sub:
         sub.show_viewport = False
-    pos, _edges = clothdiag._eval_positions(obj)
+    pos, _edges, _mask = clothdiag._eval_positions(obj)
     if sub:
         sub.show_viewport = old
     return pos
