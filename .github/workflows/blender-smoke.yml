@@ -1,0 +1,40 @@
+name: Blender smoke
+
+# Heavy (downloads Blender), so it's manual by default rather than gating PRs.
+# Run it from the Actions tab, or enable the `push` trigger if you want it on CI.
+on:
+  workflow_dispatch:
+    inputs:
+      blender_version:
+        description: "Blender version (X.Y.Z)"
+        default: "5.2.0"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: headless render smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Blender ${{ github.event.inputs.blender_version }}
+        run: |
+          set -e
+          V="${{ github.event.inputs.blender_version }}"
+          SERIES="${V%.*}"                       # 5.2.0 -> 5.2
+          URL="https://download.blender.org/release/Blender${SERIES}/blender-${V}-linux-x64.tar.xz"
+          echo "Fetching $URL"
+          curl -fsSL "$URL" -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Showcase smoke (1 frame, all four fabrics)
+        run: |
+          "$BLENDER" --background --python src/showcase.py -- \
+            --motion twirl --settle 12 --motion-frames 6 --every 20 \
+            --samples 4 --res 320x200
+
+      - name: Confirm a frame was written
+        run: test -f renders/showcase/twirl/f_0001.png && echo "smoke OK"

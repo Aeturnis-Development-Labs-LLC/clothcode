@@ -1,5 +1,9 @@
 # headless-cloth
 
+[![CI](https://github.com/Aeturnis-Development-Labs/headless-cloth/actions/workflows/ci.yml/badge.svg)](https://github.com/Aeturnis-Development-Labs/headless-cloth/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Blender 5.2](https://img.shields.io/badge/Blender-5.2-orange.svg)
+
 A **fully procedural, headless cloth pipeline** for Blender 5.2 — garments, fabrics,
 and motion are produced entirely by Python with no GUI, no hand-modeling, and no
 keyframing. Quality isn't eyeballed: every garment has to pass an **objective
@@ -7,6 +11,13 @@ measurement gate** before it's allowed to move, and the system **tunes itself** 
 meet that bar.
 
 Built with [Claude Code](https://claude.com/claude-code) as the engineer.
+
+![Four fabrics — the same procedural twirl, differences are pure simulation](assets/hero.gif)
+
+> The same garment and motion run across four fabric recipes (cotton / wool / linen /
+> velvet). Every difference in how they move is the physics, not animation. The
+> checkerboard is a debug texture locked to the fabric UVs, so you read stretch and
+> shear directly.
 
 Two principles the whole thing rests on:
 
@@ -113,8 +124,16 @@ turns out to read fabric stiffness as a single number.
 
 Issues and PRs welcome — the obvious next steps are sewing-seam garments (flat
 panels → fitted 3D), real body colliders, GPU rendering, and extending the gate to
-full motion clips. `docs/findings.md` will save you re-discovering the sharp edges.
+full motion clips. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup and the PR
+flow, and [`docs/findings.md`](docs/findings.md) to avoid re-discovering the sharp
+edges.
+
+## Versioning
+
+[Semantic Versioning](https://semver.org). While `0.y.z`, recipe values and function
+signatures may change in a minor release. Changes are tracked in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT © 2026 Aeturnis Development Labs LLC — see [`LICENSE`](LICENSE).

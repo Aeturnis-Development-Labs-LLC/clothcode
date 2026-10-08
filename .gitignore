@@ -5,9 +5,11 @@ renders/
 blendcache_*/
 *.npy
 
-# Rendered media (this repo is code-only)
+# Rendered media (this repo is code-only, except committed README assets)
 *.mp4
 *.gif
+!assets/
+!assets/**
 
 # Python
 __pycache__/

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint + compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # matches Blender 5.2's bundled Python
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Fail only on real errors (syntax, undefined names) - not style. These
+      # scripts import bpy, which isn't available here, but ruff is static so it
+      # never imports; it just parses and resolves names.
+      - name: Ruff (errors only)
+        run: ruff check --select=E9,F63,F7,F82 src
+
+      - name: Byte-compile all sources
+        run: python -m compileall -q src
