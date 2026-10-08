@@ -5,11 +5,14 @@ Scene/collection plumbing, a few procedural primitives (box / cylinder / sphere)
 and camera / light / world / render setup - everything the cloth modules need to
 build a scene and render it entirely from code, with no GUI.
 """
+import os
 import math
 import datetime
 import bpy
 import bmesh
 from mathutils import Vector, Euler
+
+_GPU_BACKEND = "?"   # cached result of the first device probe ("?" = not yet probed)
 
 
 def timestamp():
@@ -235,8 +238,44 @@ def set_view(transform='AgX', look='None', exposure=0.0):
     vs.exposure = exposure
 
 
+def enable_gpu(prefer=('OPTIX', 'CUDA', 'HIP', 'ONEAPI')):
+    """Enable a Cycles GPU backend (first of `prefer` that has a device). Returns
+    the backend name ('OPTIX'/...), or None if no GPU is usable. Probed once and
+    cached. Set env CLOTH_FORCE_CPU=1 to force CPU (CI / determinism)."""
+    global _GPU_BACKEND
+    if _GPU_BACKEND != "?":
+        return _GPU_BACKEND
+    _GPU_BACKEND = None
+    if os.environ.get("CLOTH_FORCE_CPU") == "1":
+        return None
+    try:
+        prefs = bpy.context.preferences.addons['cycles'].preferences
+    except Exception:
+        return None
+    for backend in prefer:
+        try:
+            prefs.compute_device_type = backend
+        except Exception:
+            continue                      # backend not in this build
+        try:
+            prefs.get_devices()
+        except Exception:
+            try:
+                prefs.refresh_devices()
+            except Exception:
+                pass
+        if any(d.type == backend for d in prefs.devices):
+            for d in prefs.devices:       # enable the GPU device(s) only
+                d.use = (d.type == backend)
+            _GPU_BACKEND = backend
+            print(f"[render] GPU backend: {backend}", flush=True)
+            return backend
+    print("[render] no GPU backend; using CPU", flush=True)
+    return None
+
+
 def setup_render(filepath, res=(1280, 720), samples=48, engine='CYCLES',
-                 exposure=-0.4, look='None'):
+                 exposure=-0.4, look='None', device='AUTO'):
     scene = bpy.context.scene
     scene.render.engine = engine
     scene.render.resolution_x, scene.render.resolution_y = res
@@ -246,10 +285,16 @@ def setup_render(filepath, res=(1280, 720), samples=48, engine='CYCLES',
     if engine == 'CYCLES':
         scene.cycles.samples = samples
         scene.cycles.use_denoising = True
+        backend = enable_gpu() if device != 'CPU' else None
         try:
-            scene.cycles.device = 'CPU'
+            scene.cycles.device = 'GPU' if backend else 'CPU'
         except Exception:
             pass
+        if backend == 'OPTIX':
+            try:
+                scene.cycles.denoiser = 'OPTIX'      # GPU-native denoiser
+            except Exception:
+                pass
     return scene
 
 
