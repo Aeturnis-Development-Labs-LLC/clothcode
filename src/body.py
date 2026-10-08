@@ -148,6 +148,166 @@ def ansur_body(sex="F", pct=50, ox=0.0, collection=None, make_collider=True):
     }
 
 
+def _girth(verts, zc, band=0.025, torso_cut=0.28):
+    """Torso ellipse semi-axes of the mesh slice near height zc. Only verts within
+    `torso_cut` of the vertical axis count, so out-stretched arms/hands (which sit
+    at waist height in an A-pose) don't get read as the waist."""
+    sl = [v for v in verts if abs(v[2] - zc) < band
+          and (v[0] * v[0] + v[1] * v[1]) ** 0.5 < torso_cut]
+    if not sl:
+        return 0.0, 0.0
+    return max(abs(v[0]) for v in sl), max(abs(v[1]) for v in sl)
+
+
+def prep_collider(obj, decimate=0.25, collection=None, make_collider=True):
+    """Turn an existing body mesh (real-world scale, Z-up, feet ~z=0) into a light
+    cloth collider: decimate, force OUTWARD normals (else cloth sucks inward),
+    add COLLISION. Returns the ansur_body()-shaped anchor dict with waist/hip read
+    off the geometry."""
+    collection = collection or U.get_collection("Body")
+    for c in list(obj.users_collection):
+        c.objects.unlink(obj)
+    collection.objects.link(obj)
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    # MakeHuman meshes carry shape keys (morphs) + maybe subsurf; bake them into a
+    # static mesh so Decimate can be applied (can't apply over shape keys)
+    for md in list(obj.modifiers):
+        if md.type in ('SUBSURF', 'MULTIRES'):
+            obj.modifiers.remove(md)
+    if obj.data.shape_keys:
+        bpy.ops.object.convert(target='MESH')
+        obj = bpy.context.view_layer.objects.active
+    if decimate and decimate < 1.0:
+        dm = obj.modifiers.new("Decimate", 'DECIMATE')
+        dm.ratio = decimate
+        bpy.ops.object.modifier_apply(modifier=dm.name)
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(obj.data)
+    bm.free()
+    U.shade_smooth(obj)
+    if make_collider:
+        obj.modifiers.new("Collision", 'COLLISION')
+        obj.collision.thickness_outer = 0.006
+    verts = [tuple(v.co) for v in obj.data.vertices]
+    z0 = min(v[2] for v in verts)
+    H = max(v[2] for v in verts) - z0
+    waist_z, hip_z = z0 + 0.62 * H, z0 + 0.52 * H
+    wa, wb = _girth(verts, waist_z)
+    ha, hb = _girth(verts, hip_z)
+    return {
+        "obj": obj, "parts": [obj], "sex": "model", "pct": None,
+        "stature": H, "waist_z": waist_z, "hip_z": hip_z,
+        "waist_a": wa, "waist_b": wb, "hip_a": ha, "hip_b": hb, "ox": 0.0,
+    }
+
+
+def mpfb_body(decimate=0.25, collection=None, make_collider=True):
+    """Create an anatomical human with MPFB2 (must be installed) and prep it as a
+    collider. The cloth is still 100% simulated - this is the (asset) mannequin."""
+    import addon_utils
+    for mod in ('bl_ext.user_default.mpfb', 'mpfb'):
+        try:
+            addon_utils.enable(mod, default_set=False, persistent=True)
+        except Exception:
+            pass
+    before = set(bpy.data.objects)
+    bpy.ops.mpfb.create_human()
+    new = [o for o in bpy.data.objects if o not in before and o.type == 'MESH']
+    if not new:
+        raise RuntimeError("mpfb.create_human produced no mesh (is MPFB2 installed?)")
+    human = max(new, key=lambda o: len(o.data.vertices))
+    for o in new:                       # drop eyes/teeth extras; keep the body
+        if o is not human:
+            bpy.data.objects.remove(o, do_unlink=True)
+    human.name = "Body_mpfb"
+    return prep_collider(human, decimate=decimate, collection=collection,
+                         make_collider=make_collider)
+
+
+def load_body(filepath, height=1.70, decimate=0.25, up='Y',
+              collection=None, make_collider=True):
+    """Import an external body mesh (an asset-library model / MakeHuman export)
+    and prep it as a collider: orient, scale to real-world `height` (m) with feet
+    at z=0, centre on the vertical axis, decimate to a light collision proxy,
+    force outward normals, and add COLLISION. The cloth is still 100% simulated;
+    this is just the (asset) mannequin it drapes on.
+
+    `up` is the model's up-axis ('Y' for most exports -> rotated to Blender Z).
+    Returns the same measurement-anchor dict shape as ansur_body(), with waist/hip
+    radii read off the actual geometry. Supports .obj / .fbx / .glb / .gltf.
+    """
+    collection = collection or U.get_collection("Body")
+    before = set(bpy.data.objects)
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == '.obj':
+        bpy.ops.wm.obj_import(filepath=filepath)
+    elif ext == '.fbx':
+        bpy.ops.import_scene.fbx(filepath=filepath)
+    elif ext in ('.glb', '.gltf'):
+        bpy.ops.import_scene.gltf(filepath=filepath)
+    else:
+        raise ValueError(f"unsupported body format: {ext}")
+    new = [o for o in bpy.data.objects if o not in before and o.type == 'MESH']
+    if not new:
+        raise RuntimeError("import produced no mesh")
+
+    bpy.ops.object.select_all(action='DESELECT')
+    for o in new:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = new[0]
+    if len(new) > 1:
+        bpy.ops.object.join()
+    obj = bpy.context.view_layer.objects.active
+    obj.name = "Body_imported"
+
+    if up == 'Y':                          # orient to Blender Z-up
+        obj.rotation_euler = (math.radians(90), 0, 0)
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+
+    # scale to real height, feet to z=0, centre on the vertical axis
+    co = [obj.matrix_world @ v.co for v in obj.data.vertices]
+    zs, xs, ys = [c.z for c in co], [c.x for c in co], [c.y for c in co]
+    cur_h = max(zs) - min(zs)
+    s = height / cur_h if cur_h > 1e-6 else 1.0
+    obj.scale = (s, s, s)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    obj.location = (-(min(xs) + max(xs)) / 2 * s,
+                    -(min(ys) + max(ys)) / 2 * s, -min(zs) * s)
+    bpy.ops.object.transform_apply(location=True, rotation=False, scale=False)
+
+    for c in list(obj.users_collection):
+        c.objects.unlink(obj)
+    collection.objects.link(obj)
+
+    if decimate and decimate < 1.0:        # light collision proxy
+        dm = obj.modifiers.new("Decimate", 'DECIMATE')
+        dm.ratio = decimate
+        bpy.ops.object.modifier_apply(modifier=dm.name)
+    bm = bmesh.new()                        # outward normals (else cloth sucks in)
+    bm.from_mesh(obj.data)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(obj.data)
+    bm.free()
+    U.shade_smooth(obj)
+    if make_collider:
+        obj.modifiers.new("Collision", 'COLLISION')
+        obj.collision.thickness_outer = 0.006
+
+    verts = [tuple(v.co) for v in obj.data.vertices]
+    waist_z, hip_z = 0.62 * height, 0.52 * height
+    wa, wb = _girth(verts, waist_z)
+    ha, hb = _girth(verts, hip_z)
+    return {
+        "obj": obj, "parts": [obj], "sex": "imported", "pct": None,
+        "stature": height, "waist_z": waist_z, "hip_z": hip_z,
+        "waist_a": wa, "waist_b": wb, "hip_a": ha, "hip_b": hb, "ox": 0.0,
+    }
+
+
 def _mat(name, rgb, rough=0.6):
     mat = bpy.data.materials.new(name)
     b = mat.node_tree.nodes.get("Principled BSDF")
