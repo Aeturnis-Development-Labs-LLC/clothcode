@@ -1,6 +1,6 @@
-# headless-cloth
+# clothcode
 
-[![CI](https://github.com/Aeturnis-Development-Labs/headless-cloth/actions/workflows/ci.yml/badge.svg)](https://github.com/Aeturnis-Development-Labs/headless-cloth/actions/workflows/ci.yml)
+[![CI](https://github.com/Aeturnis-Development-Labs-LLC/clothcode/actions/workflows/ci.yml/badge.svg)](https://github.com/Aeturnis-Development-Labs-LLC/clothcode/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Blender 5.2](https://img.shields.io/badge/Blender-5.2-orange.svg)
 

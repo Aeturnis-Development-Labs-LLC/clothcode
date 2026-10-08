@@ -42,7 +42,7 @@ Run once after the repo exists on GitHub (requires `gh` and admin). Requires PRs
 a passing CI check, and blocks force-pushes to `main`:
 
 ```bash
-gh api -X PUT repos/{owner}/headless-cloth/branches/main/protection \
+gh api -X PUT repos/Aeturnis-Development-Labs-LLC/clothcode/branches/main/protection \
   -H "Accept: application/vnd.github+json" \
   -f 'required_status_checks[strict]=true' \
   -f 'required_status_checks[contexts][]=lint + compile' \
