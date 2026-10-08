@@ -48,6 +48,11 @@ def colliders():
 
 
 def _eval_positions(obj):
+    """Returns (world_positions, edges, face_edge_mask).
+
+    face_edge_mask marks edges used by at least one face. Loose edges - e.g. the
+    sewing springs in a sewn garment - are False, so stretch/compression can skip
+    them (a seam spring's rest->final length ratio is nonsense for the fabric)."""
     dg = bpy.context.evaluated_depsgraph_get()
     eo = obj.evaluated_get(dg)
     me = eo.to_mesh()
@@ -59,7 +64,14 @@ def _eval_positions(obj):
         mw = np.array(eo.matrix_world)
         world = xyz @ mw[:3, :3].T + mw[:3, 3]
         edges = np.array([(e.vertices[0], e.vertices[1]) for e in me.edges])
-        return world, edges
+        face_keys = set()
+        for p in me.polygons:
+            face_keys.update(p.edge_keys)     # (min,max) vertex-index tuples
+        if len(edges):
+            mask = np.array([(min(a, b), max(a, b)) in face_keys for a, b in edges], dtype=bool)
+        else:
+            mask = np.zeros(0, dtype=bool)
+        return world, edges, mask
     finally:
         eo.to_mesh_clear()
 
@@ -103,8 +115,10 @@ def measure(cloth, frames, fps=25, collider_objs=None, looping=False,
         collider_objs = colliders()
 
     scene.frame_set(1)
-    rest, edges = _eval_positions(cloth)
+    rest, edges, emask = _eval_positions(cloth)
     nv = len(rest)
+    if emask.any():                    # ignore loose sewing edges in stretch
+        edges = edges[emask]
     rest_len = np.linalg.norm(rest[edges[:, 0]] - rest[edges[:, 1]], axis=1)
     hem_mask = rest[:, 2] < (rest[:, 2].min() + 0.03)
 
@@ -112,7 +126,7 @@ def measure(cloth, frames, fps=25, collider_objs=None, looping=False,
     max_stretch, min_comp, max_pen, max_pen_frame = 1.0, 1.0, 0.0, 0
     for fi in range(frames):
         scene.frame_set(fi + 1)
-        pos, _ = _eval_positions(cloth)
+        pos, _e, _m = _eval_positions(cloth)
         if len(pos) != nv:
             raise RuntimeError("cloth vertex count changed between frames")
         P[fi] = pos
@@ -178,12 +192,14 @@ def baseline(cloth, settle_frames, fps=25, collider_objs=None):
     if collider_objs is None:
         collider_objs = colliders()
     scene.frame_set(1)
-    pattern, edges = _eval_positions(cloth)
+    pattern, edges, emask = _eval_positions(cloth)
+    if emask.any():                    # ignore loose sewing edges in stretch
+        edges = edges[emask]
     rest_len = np.linalg.norm(pattern[edges[:, 0]] - pattern[edges[:, 1]], axis=1)
     scene.frame_set(settle_frames)
-    settled, _ = _eval_positions(cloth)
+    settled, _e, _m = _eval_positions(cloth)
     scene.frame_set(max(1, settle_frames - 1))
-    prev, _ = _eval_positions(cloth)
+    prev, _e2, _m2 = _eval_positions(cloth)
     settle_speed = float(np.linalg.norm((settled - prev) * fps, axis=1).max())
     L = np.linalg.norm(settled[edges[:, 0]] - settled[edges[:, 1]], axis=1)
     ratio = L / np.maximum(rest_len, 1e-9)
