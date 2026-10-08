@@ -1,0 +1,21 @@
+# Blender outputs & caches (all regenerable)
+renders/
+*.blend
+*.blend1
+blendcache_*/
+*.npy
+
+# Rendered media (this repo is code-only)
+*.mp4
+*.gif
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
