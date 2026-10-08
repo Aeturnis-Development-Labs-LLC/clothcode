@@ -67,6 +67,12 @@ LINEN = dict(FABRIC, mass=0.06, tension=40, compression=40, shear=15,
 VELVET = dict(FABRIC, mass=0.15, tension=15, compression=15, shear=3,
               bending=0.3, distance_min=0.025, quality=18)
 
+# FITTED - a close-to-the-body margin for tailored garments. distance_min sets how
+# far the fabric floats off the skin: 15mm -> ~9cm circumference slack, 8mm -> ~5cm.
+# Smaller margin = more fitted but needs a smooth (not heavily decimated) collider.
+FITTED = dict(FABRIC, distance_min=0.010, self_distance=0.004, quality=18,
+              collision_quality=16)
+
 # the study set, each with the settle budget its weight/stiffness needs
 FABRICS = {
     "FABRIC": {"recipe": FABRIC, "settle": 90},
@@ -125,20 +131,24 @@ def _sew_waistband(bm, panels, edges_of, waist):
     """Build a pinned circular waistband ring and sew each panel's top edge to the
     matching arc (front panel y>=0 -> +Y arc, back panel y<0 -> -Y arc), sharing
     the two side points with the side seams. Returns the ring verts (to be pinned).
-    Assumes one front + one back panel (the tube); generalises later for M3."""
-    rw, zr = waist["radius"], waist["z"]
+    Assumes one front + one back panel (the tube); generalises later for M3.
+    waist may be a circle {radius, z} or an ellipse {a, b, z} - cut an elliptical
+    waistband to the body's actual cross-section instead of a slack circle."""
+    zr = waist["z"]
+    ea = waist.get("a", waist.get("radius"))    # ellipse width semi-axis
+    eb = waist.get("b", waist.get("radius"))    # ellipse depth semi-axis
     fp = next(k for k, p in enumerate(panels) if p["center"][1] >= 0)
     bp = next(k for k, p in enumerate(panels) if p["center"][1] < 0)
     nu = panels[fp]["res"][0]
     Rf = []
     for i in range(nu + 1):
         a = math.pi * (1 - i / nu)              # left (pi) -> right (0) via +Y
-        Rf.append(bm.verts.new((rw * math.cos(a), rw * math.sin(a), zr)))
+        Rf.append(bm.verts.new((ea * math.cos(a), eb * math.sin(a), zr)))
     Rb = [None] * (nu + 1)
     Rb[0], Rb[nu] = Rf[0], Rf[nu]               # side points shared with the seams
     for i in range(1, nu):
         a = math.pi * (1 + i / nu)              # left (pi) -> right (2pi) via -Y
-        Rb[i] = bm.verts.new((rw * math.cos(a), rw * math.sin(a), zr))
+        Rb[i] = bm.verts.new((ea * math.cos(a), eb * math.sin(a), zr))
     loop = Rf + [Rb[i] for i in range(1, nu)]
     for k in range(len(loop)):                  # closed ring edges (the waistband)
         try:

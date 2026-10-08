@@ -345,4 +345,5 @@ def main():
         print("BODY_DONE", out)
 
 
-main()
+if __name__ == "__main__":      # only run the demo when invoked directly, not on import
+    main()
