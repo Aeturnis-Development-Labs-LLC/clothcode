@@ -113,14 +113,19 @@ def ansur_body(sex="F", pct=50, ox=0.0, collection=None, make_collider=True):
     _bridge(bm, rw, rh)
     _flat_cap(bm, rn, z["neck"] + 0.02, ox)     # flat neck stub (no spike)
     _flat_cap(bm, rh, z["hip"] - 0.01, ox)
+    # normals MUST point outward or cloth collision sucks the garment inward
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     bm.normal_update()
     bm.to_mesh(mesh)
     bm.free()
     U.link(obj, collection)
     U.shade_smooth(obj)
 
-    # legs: tapered, extended UP to overlap the hip (closes the junction gap)
-    leg_top = z["hip"] + 0.07
+    # legs: tapered, stopping just below the hip cap. They must NOT overlap the
+    # torso - overlapping colliders create a conflicting zone that makes draped
+    # cloth jitter forever (never settles). The small crotch gap hides under
+    # any garment.
+    leg_top = z["hip"] - 0.03
     legs = []
     for s in (-1, 1):
         leg = U.make_frustum(f"Leg_{sex}{pct}_{s}", r1=thigh_r * 0.70, r2=thigh_r,
