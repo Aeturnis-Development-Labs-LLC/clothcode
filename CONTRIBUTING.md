@@ -36,22 +36,27 @@ change should keep that property (no step should require the GUI).
 - Add an entry under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md) with your PR.
 - Releases are git tags `vX.Y.Z` cut from `main`.
 
-## Maintainer notes — enabling branch protection
+## Maintainer notes — branch protection
 
-Run once after the repo exists on GitHub (requires `gh` and admin). Requires PRs,
-a passing CI check, and blocks force-pushes to `main`:
+`main` is protected with this policy (set via the GitHub API):
+
+- requires the `lint + compile` CI check to pass (strict: branch up to date)
+- requires a pull request before merging (0 approvals — solo-friendly self-merge)
+- force-pushes and deletions blocked
+- `enforce_admins: false` — admins keep a direct-push escape hatch
+
+To **tighten for a team** (require a review, hold admins to the same rules):
 
 ```bash
 gh api -X PUT repos/Aeturnis-Development-Labs-LLC/clothcode/branches/main/protection \
-  -H "Accept: application/vnd.github+json" \
-  -f 'required_status_checks[strict]=true' \
-  -f 'required_status_checks[contexts][]=lint + compile' \
-  -f 'enforce_admins=true' \
-  -F 'required_pull_request_reviews[required_approving_review_count]=1' \
-  -f 'restrictions=' \
-  -f 'allow_force_pushes=false' \
-  -f 'allow_deletions=false'
+  -H "Accept: application/vnd.github+json" --input - <<'JSON'
+{
+  "required_status_checks": { "strict": true, "contexts": ["lint + compile"] },
+  "enforce_admins": true,
+  "required_pull_request_reviews": { "required_approving_review_count": 1, "dismiss_stale_reviews": true },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+JSON
 ```
-
-(Or set the same via **Settings → Branches → Add rule** in the GitHub UI: require a
-pull request, require the `lint + compile` status check, and disallow force pushes.)
