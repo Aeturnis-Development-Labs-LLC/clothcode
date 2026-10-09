@@ -150,7 +150,7 @@ def measure(cloth, frames, fps=25, collider_objs=None, looping=False,
                     vv = Vector(v)
                     loc, nrm, _idx, dist = bvh.find_nearest(vv)
                     # only ray-test the cheap subset that's near a collider
-                    if loc is not None and dist < 0.06 and _inside(bvh, vv):
+                    if loc is not None and dist < 0.30 and _inside(bvh, vv):
                         if dist > max_pen:
                             max_pen, max_pen_frame = float(dist), fi + 1
 
@@ -218,7 +218,7 @@ def baseline(cloth, settle_frames, fps=25, collider_objs=None):
         for v in settled:
             vv = Vector(v)
             loc, nrm, _idx, dist = bvh.find_nearest(vv)
-            if loc is not None and dist < 0.06 and _inside(bvh, vv):
+            if loc is not None and dist < 0.30 and _inside(bvh, vv):
                 max_pen = max(max_pen, float(dist))
     scene.frame_set(1)
     return {

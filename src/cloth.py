@@ -149,7 +149,9 @@ def _sew_waistband(bm, panels, edges_of, waist):
     for i in range(1, nu):
         a = math.pi * (1 + i / nu)              # left (pi) -> right (2pi) via -Y
         Rb[i] = bm.verts.new((ea * math.cos(a), eb * math.sin(a), zr))
-    loop = Rf + [Rb[i] for i in range(1, nu)]
+    # traverse the perimeter continuously: front arc left->right, then back arc
+    # right->left. (range(1, nu) jumped across the ellipse -> long cross-edges.)
+    loop = Rf + [Rb[i] for i in range(nu - 1, 0, -1)]
     for k in range(len(loop)):                  # closed ring edges (the waistband)
         try:
             bm.edges.new((loop[k], loop[(k + 1) % len(loop)]))
@@ -203,9 +205,14 @@ def build_garment(panels, seams, pins=None, waist=None, name="Garment", collecti
                 off = wj * (i / nu - 0.5)
                 co = (cx + off, cy, z) if normal == "Y" else (cx, cy + off, z)
                 g[i][j] = bm.verts.new(co)
+        # the base winding faces -Y (for normal 'Y') / +X (for 'X'); flip it so each
+        # panel's normal points OUTWARD (away from the body centre) - a consistent
+        # garment surface after sewing
+        flip_winding = (cy >= 0) if normal == "Y" else (cx < 0)
         for i in range(nu):
             for j in range(nv):
-                bm.faces.new((g[i][j], g[i + 1][j], g[i + 1][j + 1], g[i][j + 1]))
+                quad = (g[i][j], g[i + 1][j], g[i + 1][j + 1], g[i][j + 1])
+                bm.faces.new(quad[::-1] if flip_winding else quad)
         edges_of.append({
             "L": [g[0][j] for j in range(nv + 1)],
             "R": [g[nu][j] for j in range(nv + 1)],
