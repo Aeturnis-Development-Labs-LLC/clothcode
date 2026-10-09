@@ -273,7 +273,7 @@ def build_gored_skirt(waist, length, n_gores=8, hem_scale=1.6, cols=5, rows=26,
 
 
 def build_bodice(levels, z_top, z_hem, z_underarm, z_neck_front, z_neck_back,
-                 ease=0.02, hn=0.13, hs=0.33, cols=24, rows=22,
+                 crest_z, crest_y, ease=0.02, hn=0.16, hb=0.26, cols=24, rows=22,
                  name="Bodice", collection=None):
     """A fitted sleeveless bodice lofted from the measured torso cross-sections.
 
@@ -282,16 +282,18 @@ def build_bodice(levels, z_top, z_hem, z_underarm, z_neck_front, z_neck_back,
     hip->waist->bust->shoulder ellipses. The top edge is SHAPED per column by its
     position u=c/C across the front arc (0 = left side, 0.5 = centre-front, 1 = right
     side), measured as d=|u-0.5|:
-        d < hn           neckline  - scooped down to z_neck (front lower, back higher)
-        hn <= d < hs     shoulder  - full height to z_top; F sews to B (shoulder seam)
-        d >= hs          armhole   - top ramps from z_top down to z_underarm; the side
-                                     seam closes only BELOW the underarm, leaving the
-                                     armhole open above for a sleeve.
-    The garment hangs from the pinned shoulder straps (they rest on the shoulders,
-    offset out by `ease` so they clear the collider). Front/back meet coincident at the
-    two side points, so the side seams start closed. Returns (obj, "Pin").
+        d < hn      neckline - scooped down to z_neck (front lower, back higher)
+        d >= hn     carried up to z_top (upper chest / back coverage)
+    At the OUTER shoulder columns (d >= hb) a shoulder BRIDGE carries the front top
+    edge up and OVER the shoulder crest (crest_z, crest_y - the measured top of the
+    shoulder) and down to the back top edge, so there is a real strap over the shoulder
+    rather than two separate flaps. The pinned crest verts hold the garment up; the
+    side seams close only BELOW the underarm, leaving the armhole open for a sleeve.
+    Front/back meet coincident at the two side points, so the side seams start closed.
+    Returns (obj, "Pin").
 
     levels: ascending-z list of (z, a, b, cx, cy) torso ellipses (semi-axes + centre).
+    crest_z/crest_y: the shoulder crest the strap bridges over (absolute, +clearance).
     """
     collection = collection or U.get_collection(COL)
     C, R = cols, rows
@@ -317,10 +319,7 @@ def build_bodice(levels, z_top, z_hem, z_underarm, z_neck_front, z_neck_back,
             tt = d / hn                                 # from z_neck (centre) to z_top
             s = tt * tt * (3 - 2 * tt)                  # smoothstep -> no square corner
             return z_neck + (z_top - z_neck) * s
-        if d < hs:                                      # shoulder strap: flat plateau
-            return z_top
-        tt = (d - hs) / (0.5 - hs + 1e-9)               # armhole ramp to the underarm
-        return z_top + (z_underarm - z_top) * tt
+        return z_top                                    # carried up to the shoulder line
 
     panels = {}
     for side, a0, a1, z_neck in (("F", math.pi, 0.0, z_neck_front),
@@ -348,17 +347,27 @@ def build_bodice(levels, z_top, z_hem, z_underarm, z_neck_front, z_neck_back,
                 return grid[c][r]
         return None
 
+    # shoulder bridge: at the outer columns carry the front top edge up OVER the
+    # shoulder crest and down to the back top edge (a real strap over the shoulder,
+    # not two flaps). The crest verts are pinned - they rest on the shoulder and hold
+    # the whole bodice up.
     pin_verts = []
-    for c in range(C + 1):                              # shoulder straps -> pins
-        d = abs(c / C - 0.5)
-        if hn <= d < hs:
-            # Pin the front and back strap tops at the shoulder (they rest on the
-            # shoulder, offset out by ease). Do NOT sew front-to-back here: at a
-            # torso-level slice the front (+Y) and back (-Y) strap verts are ~80mm
-            # apart with the shoulder/neck between them, so a sewing spring would drag
-            # them together straight THROUGH the body and the solver never settles.
-            # The pins hold each side up independently (a tank-strap shoulder).
-            pin_verts += [v for v in (top_vert(F, c), top_vert(B, c)) if v is not None]
+    crest = {}
+    for c in range(C + 1):
+        if abs(c / C - 0.5) >= hb:
+            ft, bt = top_vert(F, c), top_vert(B, c)
+            if ft is not None and bt is not None:
+                k = bm.verts.new((ft.co.x, crest_y, crest_z))
+                crest[c] = k
+                pin_verts.append(k)
+    cols_sorted = sorted(crest)
+    for c0, c1 in zip(cols_sorted, cols_sorted[1:]):
+        if c1 != c0 + 1:                                # skip the gap between L/R groups
+            continue
+        ft0, ft1 = top_vert(F, c0), top_vert(F, c1)
+        bt0, bt1 = top_vert(B, c0), top_vert(B, c1)
+        bm.faces.new((ft0, ft1, crest[c1], crest[c0]))  # front -> crest
+        bm.faces.new((crest[c0], crest[c1], bt1, bt0))  # crest -> back
     for c in (0, C):                                    # side seams below the underarm
         for r in range(R + 1):
             z = z_hem + (z_top - z_hem) * (r / R)
@@ -373,6 +382,82 @@ def build_bodice(levels, z_top, z_hem, z_underarm, z_neck_front, z_neck_back,
         ctr = f.calc_center_median()
         _a, _b, cx, cy = loft(ctr.z)
         if f.normal.x * (ctr.x - cx) + f.normal.y * (ctr.y - cy) < 0:
+            f.normal_flip()
+    bm.verts.index_update()
+    pin_idx = sorted({v.index for v in pin_verts})
+    bm.to_mesh(mesh)
+    bm.free()
+    U.link(obj, collection)
+    for p in mesh.polygons:
+        p.use_smooth = True
+    vg = obj.vertex_groups.new(name="Pin")
+    vg.add(pin_idx, 1.0, 'REPLACE')
+    return obj, "Pin"
+
+
+def build_tabard(z_top, z_hem, half_width, neck_half, cx, cy, depth,
+                 crest_z, z_neck_front=None, yoke=0.06, cols=28, rows=30,
+                 name="Tabard", collection=None):
+    """A simple medieval TABARD / poncho: a rectangular front + back panel joined over
+    the shoulders by a flat YOKE with a head hole between them, open at the sides,
+    hanging straight to the hem. It rests on the shoulders (no fitted armholes or
+    straps) and is cinched at the waist with a cord afterwards - the period-appropriate
+    alternative to a fitted bodice, and the body does the shaping.
+
+    Columns run x = cx-half_width .. cx+half_width. A column is a SHOULDER column when
+    |x-cx| > neck_half: its front/back tops are a flat yoke strip of half-depth `yoke`
+    lying on the shoulder crest (z=crest_z, y in cy +/- yoke) - the fabric folds over
+    the shoulder as a real yoke (NOT a knife-edge, which made degenerate ~5mm faces at
+    the fold that blew the stretch metric up). The yoke verts are pinned; the panels
+    drape from the yoke edges down to the flat front (cy+depth) / back (cy-depth). The
+    centre columns (|x-cx| <= neck_half) stay separate front/back up to z_top - the gap
+    between them is the head hole. Returns (obj, "Pin")."""
+    collection = collection or U.get_collection(COL)
+    C, R = cols, rows
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+    bm = bmesh.new()
+
+    z_neck_front = z_top if z_neck_front is None else z_neck_front
+    pin_verts = []
+    yoke_top = {}                                       # c -> (front_top, back_top) verts
+    panels = {}
+    for side, dy, ytop, zneck in (("F", +depth, +yoke, z_neck_front),
+                                  ("B", -depth, -yoke, z_top)):
+        grid = [[None] * (R + 1) for _ in range(C + 1)]
+        for c in range(C + 1):
+            x = cx - half_width + 2 * half_width * c / C
+            shoulder = abs(x - cx) > neck_half
+            for r in range(R + 1):
+                frac = r / R                            # 0 = hem, 1 = top
+                if shoulder:                            # drape yoke edge -> flat panel
+                    y = (cy + dy) + (cy + ytop - (cy + dy)) * frac
+                    z = z_hem + (crest_z - z_hem) * frac
+                else:                                   # neck column: flat; front scoops
+                    y = cy + dy
+                    z = z_hem + (zneck - z_hem) * frac
+                grid[c][r] = bm.verts.new((x, y, z))
+            if shoulder:
+                pin_verts.append(grid[c][R])
+                yoke_top.setdefault(c, {})[side] = grid[c][R]
+        for c in range(C):
+            for r in range(R):
+                q = [grid[c][r], grid[c + 1][r], grid[c + 1][r + 1], grid[c][r + 1]]
+                if all(q):
+                    bm.faces.new(q)
+        panels[side] = grid
+
+    # flat yoke strip over each shoulder: connect the front and back yoke-edge tops
+    ys = sorted(c for c in yoke_top if "F" in yoke_top[c] and "B" in yoke_top[c])
+    for c0, c1 in zip(ys, ys[1:]):
+        if c1 != c0 + 1:                                # skip the gap over the neck hole
+            continue
+        bm.faces.new((yoke_top[c0]["F"], yoke_top[c1]["F"],
+                      yoke_top[c1]["B"], yoke_top[c0]["B"]))
+
+    bm.normal_update()
+    for f in bm.faces:                                  # front faces +Y, back faces -Y
+        if f.normal.y * (f.calc_center_median().y - cy) < 0:
             f.normal_flip()
     bm.verts.index_update()
     pin_idx = sorted({v.index for v in pin_verts})

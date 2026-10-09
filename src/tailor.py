@@ -150,6 +150,19 @@ def measure_body(b):
                    if s is None else
                    {"z": zc, "a": s["a"], "b": s["b"], "circ": s["per"],
                     "center": s["center"], "valid": True})
+    # Shoulder crest: the TOP of the torso over the outer-shoulder x-band (just inboard
+    # of where the arm clips off). A shoulder strap bridges over this ridge. Restrict to
+    # |x| in the outer-shoulder band and |y| small so the rising neck/head is excluded.
+    sa = M["shoulder"]["a"]
+    band = [v for v in verts if 0.80 * sa < abs(v[0]) < 1.1 * sa and abs(v[1]) < 0.16]
+    if band:
+        cz = max(v[2] for v in band)
+        top = [v for v in band if v[2] > cz - 0.02]
+        M["crest_z"] = cz
+        M["crest_y"] = sum(v[1] for v in top) / len(top)
+    else:
+        M["crest_z"] = M["shoulder"]["z"] + 0.02
+        M["crest_y"] = M["shoulder"].get("center", (0, 0))[1]
     return M
 
 
@@ -218,19 +231,44 @@ def tailor_tunic(M, col, ease=0.030):
     z_underarm = M["bust"]["z"] - 0.09
     z_neck_front = M["bust"]["z"] + 0.55 * (z_top - M["bust"]["z"])
     z_neck_back = z_top - 0.02
+    crest_z = M["crest_z"] + 0.015        # rest the strap just above the shoulder crest
+    crest_y = M["shoulder"]["center"][1]  # centre the bridge between front & back tops
+    #   (NOT the measured forward crest - that made the crest->back span the whole
+    #   shoulder depth, a lopsided tent that distorted; centred = short even straps)
     tunic, pin = cloth.build_bodice(levels, z_top, z_hem, z_underarm,
-                                    z_neck_front, z_neck_back, ease=ease,
-                                    name="Tunic", collection=col)
+                                    z_neck_front, z_neck_back, crest_z, crest_y,
+                                    ease=ease, name="Tunic", collection=col)
     return tunic, pin
 
 
-def _drape_and_gate(garment, pin, settle, label):
-    """Shared drape recipe + baseline gate for any tailored garment."""
+def tailor_tabard(M, col, ease=0.030, length_frac=0.40):
+    """Draft a simple tabard/poncho (the villager upper garment): a rectangular front +
+    back panel that folds over the shoulders through a head hole and hangs open at the
+    sides to mid-thigh. Rests on the shoulders - no fitted armholes. Cinched at the
+    waist with a cord afterwards. Sized to the measured shoulders/torso."""
+    cx, cy = M["bust"].get("center", (0.0, 0.0))
+    z_top = M["shoulder"]["z"]                           # top of the neck hole
+    z_hem = M["z0"] + length_frac * M["stature"]         # mid-thigh
+    half_width = M["shoulder"]["a"] + 0.035              # a touch past the shoulders
+    neck_half = 0.075                                    # clears the head, rests on shoulders
+    depth = max(M["bust"]["b"], M["waist"]["b"], M["hip"]["b"]) + ease
+    crest_z = M["crest_z"] + 0.008                        # rest the yoke ON the shoulder
+    yoke = M["shoulder"]["b"]                             # flat fold width = shoulder depth
+    z_neck_front = M["bust"]["z"] + 0.03                  # scoop the front head-hole edge
+    tab, pin = cloth.build_tabard(z_top, z_hem, half_width, neck_half, cx, cy, depth,
+                                  crest_z, z_neck_front=z_neck_front, yoke=yoke,
+                                  name="Tabard", collection=col)
+    return tab, pin
+
+
+def _drape_and_gate(garment, pin, settle, label, loose=False):
+    """Shared drape recipe + baseline gate for any tailored garment. `loose` relaxes
+    the fold/compression bound for draped garments (tabard) that are MEANT to fold."""
     drape = dict(cloth.FITTED, self_collision=False, quality=12, collision_quality=8)
     cl = cloth.add_cloth(garment, pin, drape, sew=True)
     cloth.bake(garment, cl, settle)
     rep = clothdiag.baseline(garment, settle, fps=25)
-    ok, text = clothdiag.baseline_verdict(rep)
+    ok, text = clothdiag.baseline_verdict(rep, loose=loose)
     print(text, flush=True)
     print(f"TAILOR_{label}_GATE", "PASS" if ok else "FAIL")
     return ok
@@ -246,7 +284,7 @@ def main():
     glb = arg("--glb", None)             # path to an imported body (.glb/.obj/.fbx)
     settle = arg("--settle", 150, int)
     samples = arg("--samples", 18, int)
-    garment = arg("--garment", "skirt")  # skirt | tunic | both
+    garment = arg("--garment", "skirt")  # skirt | tunic | tabard | both
 
     U.clear_scene()
     col = U.get_collection(cloth.COL)
@@ -282,6 +320,10 @@ def main():
         tunic, tpin = tailor_tunic(M, col)
         tunic.data.materials.append(flat("Tunic", (0.18, 0.34, 0.52)))
         _drape_and_gate(tunic, tpin, settle, "TUNIC")
+    if garment == "tabard":
+        tab, tpin = tailor_tabard(M, col)
+        tab.data.materials.append(flat("Tabard", (0.42, 0.30, 0.17), rough=0.9))
+        _drape_and_gate(tab, tpin, settle, "TABARD", loose=True)
 
     look_z = 0.85 if garment == "skirt" else 1.05
     bpy.context.scene.frame_set(settle)

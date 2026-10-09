@@ -40,6 +40,16 @@ BASELINE_ENVELOPE = {
     "settle_speed_m_s":      ("<=", 0.05),     # actually reached equilibrium
 }
 
+# A LOOSE / draped garment (tabard, cloak, cinched tunic) is MEANT to fold, and a
+# fold compresses the straight-line edge it spans - so the compression metric, which
+# flags bunching in a FITTED garment, instead just measures the intended drape. For
+# loose garments we keep the physically meaningful checks strict (no penetration, no
+# over-stretch, actually settled) but relax the fold bound to only catch pathological
+# collapse / self-overlap. Confirmed empirically: narrowing a tabard to remove "excess"
+# fabric drove compression DOWN (0.44 -> 0.17), the opposite of a fit error.
+BASELINE_ENVELOPE_LOOSE = dict(BASELINE_ENVELOPE)
+BASELINE_ENVELOPE_LOOSE["rest_min_compression"] = (">=", 0.25)
+
 
 def colliders():
     """All collision meshes in the scene."""
@@ -229,13 +239,15 @@ def baseline(cloth, settle_frames, fps=25, collider_objs=None):
     }
 
 
-def baseline_verdict(report):
+def baseline_verdict(report, loose=False):
+    env = BASELINE_ENVELOPE_LOOSE if loose else BASELINE_ENVELOPE
     ops = {"<=": lambda a, b: a <= b, ">=": lambda a, b: a >= b}
     checks, ok = [], True
-    for key, (op, bound) in BASELINE_ENVELOPE.items():
+    for key, (op, bound) in env.items():
         passed = ops[op](report[key], bound)
         ok = ok and passed
         checks.append((key, report[key], op, bound, passed))
+    comp_bound = env["rest_min_compression"][1]
     recs = []
     if report["settled_penetration_m"] > 0.012:
         recs.append("Rest-state collider overlap -> increase clearance (thinner "
@@ -244,7 +256,7 @@ def baseline_verdict(report):
         recs.append("Not at equilibrium -> increase settle frames.")
     if report["rest_max_stretch"] > 1.30:
         recs.append("Over-stretched at rest -> pattern too small or over-pinned.")
-    if report["rest_min_compression"] < 0.55:
+    if report["rest_min_compression"] < comp_bound:
         recs.append("Heavily compressed at rest -> too much fabric / bunching.")
     if not recs:
         recs.append("Baseline clean -> safe to proceed to secondary motion / full solve.")
