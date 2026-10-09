@@ -32,18 +32,91 @@ def _perimeter(a, b):
     return math.pi * (3 * (a + b) - math.sqrt(max(0.0, (3 * a + b) * (a + 3 * b))))
 
 
+def _plane_segments(verts, faces, zc):
+    """Line segments where the mesh crosses the horizontal plane z=zc, as (x,y)
+    pairs (exact triangle/polygon-plane intersection)."""
+    segs = []
+    for f in faces:
+        pts = []
+        n = len(f)
+        for k in range(n):
+            a = verts[f[k]]
+            b = verts[f[(k + 1) % n]]
+            if (a[2] < zc) != (b[2] < zc):
+                t = (zc - a[2]) / (b[2] - a[2])
+                pts.append((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])))
+        if len(pts) == 2:
+            segs.append((pts[0], pts[1]))
+    return segs
+
+
+def _components(segs, q=0.004):
+    """Group segments into connected contours by endpoint proximity (union-find)."""
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def key(p):
+        return (round(p[0] / q), round(p[1] / q))
+
+    for p0, p1 in segs:
+        parent[find(key(p0))] = find(key(p1))
+    comps = {}
+    for seg in segs:
+        comps.setdefault(find(key(seg[0])), []).append(seg)
+    return list(comps.values())
+
+
+def _torso_section(verts, faces, zc):
+    """Measure the TORSO cross-section at z=zc: split the plane-slice into contours,
+    pick the central closed loop (ignoring separate arm/hand loops), and return its
+    TRUE perimeter + half-width + half-depth + centre."""
+    comps = _components(_plane_segments(verts, faces, zc))
+    if not comps:
+        return None
+
+    def stats(c):
+        pts = [p for s in c for p in s]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return {"per": sum(math.dist(p0, p1) for p0, p1 in c),
+                "a": (max(xs) - min(xs)) / 2, "b": (max(ys) - min(ys)) / 2,
+                "center": (sum(xs) / len(xs), sum(ys) / len(ys))}
+
+    scored = [stats(c) for c in comps]
+    central = [s for s in scored
+               if (s["center"][0] ** 2 + s["center"][1] ** 2) ** 0.5 < 0.15]
+    return max(central or scored, key=lambda s: s["per"])
+
+
 def measure_body(b):
-    """Read tailoring measurements off a prepped body (dict from body.*). Returns
-    per-level {z, a, b, circ} (ellipse semi-axes + circumference) plus stature."""
-    obj = b["obj"]
-    verts = [tuple(v.co) for v in obj.data.vertices]
+    """Tailoring measurements by true CONTOUR slicing of the CLEAN anatomy (not the
+    remesh proxy, which inflates dimensions): at each landmark, intersect a
+    horizontal plane with the torso and take the real perimeter + width + depth.
+    Separate arm/hand loops are ignored, so an A-pose can't corrupt the waist."""
+    verts = b.get("anatomy_verts")
+    faces = b.get("anatomy_faces")
+    if verts is None:                      # procedural body: slice its mesh directly
+        obj = b["obj"]
+        verts = [tuple(obj.matrix_world @ v.co) for v in obj.data.vertices]
+        faces = [tuple(p.vertices) for p in obj.data.polygons]
     z0 = min(v[2] for v in verts)
     H = max(v[2] for v in verts) - z0
     M = {"stature": H, "z0": z0}
-    for name, (frac, cut) in LEVELS.items():
-        z = z0 + frac * H
-        a, bb = body._girth(verts, z, torso_cut=cut)
-        M[name] = {"z": z, "a": a, "b": bb, "circ": _perimeter(a, bb)}
+    for name, (frac, _cut) in LEVELS.items():
+        zc = z0 + frac * H
+        s = _torso_section(verts, faces, zc)
+        M[name] = ({"z": zc, "a": 0.0, "b": 0.0, "circ": 0.0, "valid": False}
+                   if s is None else
+                   {"z": zc, "a": s["a"], "b": s["b"], "circ": s["per"],
+                    "center": s["center"], "valid": True})
     return M
 
 
@@ -98,17 +171,23 @@ def main():
         return c(argv[argv.index(f) + 1]) if f in argv else d
 
     model = arg("--model", "mpfb")
+    glb = arg("--glb", None)             # path to an imported body (.glb/.obj/.fbx)
     settle = arg("--settle", 150, int)
     samples = arg("--samples", 18, int)
 
     U.clear_scene()
     col = U.get_collection(cloth.COL)
-    # T-pose the figure (arms out - the garment-fitting pose; keeps the hands clear
-    # of the waist without touching the geometry), then voxel-remesh the full closed
-    # human into a watertight smooth shell (smooth -> sewn garment settles; closed ->
-    # the penetration metric is valid).
-    b = (body.mpfb_body(remesh=0.02, pose='tpose', collection=col) if model == "mpfb"
-         else body.ansur_body("F", 50, collection=col))
+    if glb:
+        # a pre-made, already-posed MakeHuman model (T-pose, legs splayed) - just
+        # import + voxel-remesh to the watertight collider; no posing needed
+        b = body.load_body(glb, height=1.755, remesh=0.02, up='Z', collection=col)
+    elif model == "mpfb":
+        # T-pose the figure (arms out - the garment-fitting pose; keeps the hands
+        # clear of the waist without touching the geometry), then voxel-remesh the
+        # full closed human into a watertight smooth shell.
+        b = body.mpfb_body(remesh=0.02, pose='tpose', collection=col)
+    else:
+        b = body.ansur_body("F", 50, collection=col)
     for p in b["parts"]:
         p.data.materials.append(flat("Skin", (0.80, 0.56, 0.44), 0.6))
     M = measure_body(b)

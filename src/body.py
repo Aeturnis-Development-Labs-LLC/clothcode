@@ -31,24 +31,27 @@ import bmesh
 import utils as U
 
 # sex -> measurement -> {percentile: metres}
+# Exact ANSUR II (2012) percentile values, metres. Source columns (mm):
+# stature, neckcircumference, biacromialbreadth, chestcircumference,
+# waistcircumference (natural waist), buttockcircumference, thighcircumference.
 ANSUR = {
     "F": {
-        "stature":  {5: 1.521, 50: 1.628, 95: 1.737},
-        "neck":     {5: 0.300, 50: 0.335, 95: 0.379},
-        "shoulder": {5: 0.330, 50: 0.355, 95: 0.382},   # biacromial breadth
-        "chest":    {5: 0.821, 50: 0.931, 95: 1.079},
-        "waist":    {5: 0.726, 50: 0.861, 95: 1.264},   # omphalion
-        "hip":      {5: 0.904, 50: 1.019, 95: 1.159},   # buttock circumference
-        "thigh":    {5: 0.496, 50: 0.582, 95: 0.685},
+        "stature":  {5: 1.525, 50: 1.626, 95: 1.740},
+        "neck":     {5: 0.302, 50: 0.328, 95: 0.363},
+        "shoulder": {5: 0.335, 50: 0.365, 95: 0.396},   # biacromial breadth
+        "chest":    {5: 0.8242, 50: 0.940, 95: 1.094},
+        "waist":    {5: 0.710, 50: 0.852, 95: 1.040},   # waist circumference
+        "hip":      {5: 0.9012, 50: 1.0185, 95: 1.1558},  # buttock circumference
+        "thigh":    {5: 0.527, 50: 0.613, 95: 0.711},
     },
     "M": {
-        "stature":  {5: 1.655, 50: 1.756, 95: 1.868},
-        "neck":     {5: 0.352, 50: 0.397, 95: 0.448},
-        "shoulder": {5: 0.367, 50: 0.400, 95: 0.433},
-        "chest":    {5: 0.904, 50: 1.041, 95: 1.200},
-        "waist":    {5: 0.775, 50: 0.912, 95: 1.284},   # omphalion
-        "hip":      {5: 0.920, 50: 1.033, 95: 1.159},
-        "thigh":    {5: 0.509, 50: 0.600, 95: 0.702},
+        "stature":  {5: 1.648, 50: 1.755, 95: 1.870},
+        "neck":     {5: 0.360, 50: 0.395, 95: 0.443},
+        "shoulder": {5: 0.384, 50: 0.415, 95: 0.447},
+        "chest":    {5: 0.922, 50: 1.056, 95: 1.207},
+        "waist":    {5: 0.768, 50: 0.937, 95: 1.131},   # waist circumference
+        "hip":      {5: 0.899, 50: 1.017, 95: 1.149},
+        "thigh":    {5: 0.532, 50: 0.624, 95: 0.723},
     },
 }
 
@@ -195,6 +198,11 @@ def prep_collider(obj, decimate=0.25, remesh=None, strip_arms=False,
         bmesh.ops.delete(bm, geom=doomed, context='VERTS')
         bm.to_mesh(obj.data)
         bm.free()
+    # keep the CLEAN anatomy (pre-remesh) for contour measurement - the collision
+    # proxy below is for solving, not for measuring (remesh inflates dimensions)
+    anat_verts = [tuple(obj.matrix_world @ v.co) for v in obj.data.vertices]
+    anat_faces = [tuple(p.vertices) for p in obj.data.polygons]
+
     if remesh:
         rm = obj.modifiers.new("Remesh", 'REMESH')
         rm.mode = 'VOXEL'
@@ -223,6 +231,7 @@ def prep_collider(obj, decimate=0.25, remesh=None, strip_arms=False,
         "obj": obj, "parts": [obj], "sex": "model", "pct": None,
         "stature": H, "waist_z": waist_z, "hip_z": hip_z,
         "waist_a": wa, "waist_b": wb, "hip_a": ha, "hip_b": hb, "ox": 0.0,
+        "anatomy_verts": anat_verts, "anatomy_faces": anat_faces,
     }
 
 
@@ -274,17 +283,16 @@ def mpfb_body(decimate=0.25, remesh=None, strip_arms=False, pose=None,
     return result
 
 
-def load_body(filepath, height=1.70, decimate=0.25, up='Y',
+def load_body(filepath, height=1.70, decimate=0.25, remesh=None, up='Y',
               collection=None, make_collider=True):
-    """Import an external body mesh (an asset-library model / MakeHuman export)
-    and prep it as a collider: orient, scale to real-world `height` (m) with feet
-    at z=0, centre on the vertical axis, decimate to a light collision proxy,
-    force outward normals, and add COLLISION. The cloth is still 100% simulated;
-    this is just the (asset) mannequin it drapes on.
+    """Import an external body mesh (an asset-library model / MakeHuman export),
+    orient it Z-up, scale to real-world `height` (m) with feet at z=0, centre it,
+    then prep it as a collider (prep_collider: remesh / decimate / outward normals /
+    COLLISION / measurement anchors). The cloth is still 100% simulated; this is just
+    the asset mannequin it drapes on.
 
-    `up` is the model's up-axis ('Y' for most exports -> rotated to Blender Z).
-    Returns the same measurement-anchor dict shape as ansur_body(), with waist/hip
-    radii read off the actual geometry. Supports .obj / .fbx / .glb / .gltf.
+    `up` = the model's up-axis ('Y' -> rotate to Blender Z; 'Z' -> already up, e.g. a
+    glTF already converted by Blender's importer). Supports .obj / .fbx / .glb / .gltf.
     """
     collection = collection or U.get_collection("Body")
     before = set(bpy.data.objects)
@@ -329,29 +337,8 @@ def load_body(filepath, height=1.70, decimate=0.25, up='Y',
         c.objects.unlink(obj)
     collection.objects.link(obj)
 
-    if decimate and decimate < 1.0:        # light collision proxy
-        dm = obj.modifiers.new("Decimate", 'DECIMATE')
-        dm.ratio = decimate
-        bpy.ops.object.modifier_apply(modifier=dm.name)
-    bm = bmesh.new()                        # outward normals (else cloth sucks in)
-    bm.from_mesh(obj.data)
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    bm.to_mesh(obj.data)
-    bm.free()
-    U.shade_smooth(obj)
-    if make_collider:
-        obj.modifiers.new("Collision", 'COLLISION')
-        obj.collision.thickness_outer = 0.006
-
-    verts = [tuple(v.co) for v in obj.data.vertices]
-    waist_z, hip_z = 0.62 * height, 0.52 * height
-    wa, wb = _girth(verts, waist_z)
-    ha, hb = _girth(verts, hip_z)
-    return {
-        "obj": obj, "parts": [obj], "sex": "imported", "pct": None,
-        "stature": height, "waist_z": waist_z, "hip_z": hip_z,
-        "waist_a": wa, "waist_b": wb, "hip_a": ha, "hip_b": hb, "ox": 0.0,
-    }
+    return prep_collider(obj, decimate=decimate, remesh=remesh,
+                         collection=collection, make_collider=make_collider)
 
 
 def _mat(name, rgb, rough=0.6):
