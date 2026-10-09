@@ -23,7 +23,8 @@ import body
 
 # vertical landmarks as fractions of stature, and the torso cut for each slice
 LEVELS = {"neck": (0.86, 0.12), "shoulder": (0.82, 0.26), "bust": (0.75, 0.28),
-          "waist": (0.63, 0.28), "hip": (0.52, 0.30), "knee": (0.28, 0.20)}
+          "waist": (0.63, 0.28), "navel": (0.59, 0.27), "hip": (0.52, 0.30),
+          "knee": (0.28, 0.20)}
 
 
 def _perimeter(a, b):
@@ -63,17 +64,19 @@ def print_measurements(M):
     print(f"stature = {M['stature']:.3f} m", flush=True)
 
 
-def tailor_skirt(M, col, ease=0.030, flare=1.55, length=0.50):
-    """Draft a skirt cut to the waist measurement: an elliptical waistband sized to
-    the body's waist + ease, two flared front/back panels whose top width equals
-    the waistband's front arc (so it sews on without gathering). `ease` must clear
-    the body everywhere - a real waist isn't a clean ellipse, so a too-tight band
-    dips inside the belly/spine and the pin gets trapped there (never settles)."""
-    wz = M["waist"]["z"]
-    wa, wb = M["waist"]["a"] + ease, M["waist"]["b"] + ease   # waistband ellipse
+def tailor_skirt(M, col, level="navel", ease=0.018, flare=1.6, length=0.48):
+    """Draft a skirt cut to the body: an elliptical waistband at `level` (navel, where
+    a skirt actually sits - lower + rounder than the anatomical waist) + ease, with two
+    flared front/back panels whose top width equals the waistband's front arc (so it
+    sews on without gathering). The navel cross-section is rounder, so a small ease
+    gives a SNUG band that still clears the body (the irregular natural waist needed
+    much more)."""
+    L = M[level]
+    wz = L["z"]
+    wa, wb = L["a"] + ease, L["b"] + ease                    # waistband ellipse
     w = _perimeter(wa, wb) / 2.0                              # panel top = front arc
     hz = wz - length
-    d = wb + 0.04
+    d = wb + 0.035
     nu, nv = 40, 30
     panels = [
         dict(name="SkirtF", w=w, h=length, res=(nu, nv),
