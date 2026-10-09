@@ -127,6 +127,33 @@ def build_skirt(spec, collection=None):
     return obj, waist
 
 
+def _ellipse_arc(ea, eb, a0, a1, n, samples=2000):
+    """(x, y) for n+1 points from angle a0 to a1 spaced equally by ARC LENGTH.
+    A flat panel top has uniform spacing; an ellipse sampled by uniform ANGLE bunches
+    points at the high-curvature ends and spreads them at front/back, so sewing a
+    uniform edge to it would compress the fabric at the sides and stretch it at the
+    front. Equal-arc spacing makes the sewn edge map ~1:1 -> no spurious stretch."""
+    dense = [(a0 + (a1 - a0) * k / samples) for k in range(samples + 1)]
+    pts = [(ea * math.cos(t), eb * math.sin(t)) for t in dense]
+    cum = [0.0]
+    for k in range(1, len(pts)):
+        cum.append(cum[-1] + math.dist(pts[k], pts[k - 1]))
+    total = cum[-1]
+    out, j = [], 0
+    for i in range(n + 1):
+        target = total * i / n
+        while j < samples and cum[j + 1] < target:
+            j += 1
+        if j >= samples:
+            out.append(pts[-1])
+            continue
+        seg = cum[j + 1] - cum[j]
+        f = 0.0 if seg < 1e-12 else (target - cum[j]) / seg
+        out.append((pts[j][0] + f * (pts[j + 1][0] - pts[j][0]),
+                    pts[j][1] + f * (pts[j + 1][1] - pts[j][1])))
+    return out
+
+
 def _sew_waistband(bm, panels, edges_of, waist):
     """Build a pinned circular waistband ring and sew each panel's top edge to the
     matching arc (front panel y>=0 -> +Y arc, back panel y<0 -> -Y arc), sharing
@@ -137,18 +164,22 @@ def _sew_waistband(bm, panels, edges_of, waist):
     zr = waist["z"]
     ea = waist.get("a", waist.get("radius"))    # ellipse width semi-axis
     eb = waist.get("b", waist.get("radius"))    # ellipse depth semi-axis
-    fp = next(k for k, p in enumerate(panels) if p["center"][1] >= 0)
-    bp = next(k for k, p in enumerate(panels) if p["center"][1] < 0)
+    cx = waist.get("cx", 0.0)                   # torso cross-section centre (the body
+    cy = waist.get("cy", 0.0)                   # isn't centred on the origin - e.g. the
+    #   navel sits ~37mm behind it; a ring built at the origin leaves the back poking
+    #   through the pinned loop, trapping the pin -> never settles -> explodes)
+    fp = next(k for k, p in enumerate(panels) if p["center"][1] >= cy)
+    bp = next(k for k, p in enumerate(panels) if p["center"][1] < cy)
     nu = panels[fp]["res"][0]
-    Rf = []
-    for i in range(nu + 1):
-        a = math.pi * (1 - i / nu)              # left (pi) -> right (0) via +Y
-        Rf.append(bm.verts.new((ea * math.cos(a), eb * math.sin(a), zr)))
+    # front arc: left (pi) -> right (0) via +Y;  back arc: left (pi) -> right (2pi)
+    # via -Y.  Both sampled by equal arc length to match the uniform panel tops.
+    front = _ellipse_arc(ea, eb, math.pi, 0.0, nu)
+    back = _ellipse_arc(ea, eb, math.pi, 2 * math.pi, nu)
+    Rf = [bm.verts.new((cx + x, cy + y, zr)) for x, y in front]
     Rb = [None] * (nu + 1)
     Rb[0], Rb[nu] = Rf[0], Rf[nu]               # side points shared with the seams
     for i in range(1, nu):
-        a = math.pi * (1 + i / nu)              # left (pi) -> right (2pi) via -Y
-        Rb[i] = bm.verts.new((ea * math.cos(a), eb * math.sin(a), zr))
+        Rb[i] = bm.verts.new((cx + back[i][0], cy + back[i][1], zr))
     # traverse the perimeter continuously: front arc left->right, then back arc
     # right->left. (range(1, nu) jumped across the ellipse -> long cross-edges.)
     loop = Rf + [Rb[i] for i in range(nu - 1, 0, -1)]
@@ -164,6 +195,81 @@ def _sew_waistband(bm, panels, edges_of, waist):
             except ValueError:
                 pass
     return loop
+
+
+def build_gored_skirt(waist, length, n_gores=8, hem_scale=1.6, cols=5, rows=26,
+                      name="Skirt", collection=None):
+    """A sewn GORED skirt: `n_gores` wedge panels joined edge-to-edge around an
+    elliptical waistband, each flaring from its arc of the waist ellipse to
+    `hem_scale` x that arc at the hem.
+
+    Why gores beat two flat panels: two panels each have to bend ~180 degrees around
+    the body, which buckles the fabric at the side seams (reads as heavy compression)
+    and leaves no room between 'tight over the hips' (stretch) and 'too much hem'
+    (folds). N gores each bend only 360/N degrees and spread the flare evenly. Each
+    gore is PRE-CURVED to the body loft (it follows the waist ellipse at the top and a
+    scaled ellipse at the hem) so it starts in-shape and barely deforms while settling.
+
+    The top row is pinned (the waistband); adjacent gores are joined by loose sewing
+    edges that start coincident and stay shut. Returns (obj, "Pin")."""
+    collection = collection or U.get_collection(COL)
+    ea = waist.get("a", waist.get("radius"))
+    eb = waist.get("b", waist.get("radius"))
+    cx, cy = waist.get("cx", 0.0), waist.get("cy", 0.0)
+    zr = waist["z"]
+    hz = zr - length
+    N, C, R = n_gores, cols, rows
+    total = N * C
+    # equal-arc points around the full waist ellipse, relative to its centre; scaling
+    # them by s about the centre keeps the same arc division at every row down.
+    rel = _ellipse_arc(ea, eb, -math.pi, math.pi, total)[:total]
+
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+    bm = bmesh.new()
+    gores = []                                  # per gore: grid[col][row] of BMVert
+    pin_verts = []
+    for g in range(N):
+        grid = [[None] * (R + 1) for _ in range(C + 1)]
+        for c in range(C + 1):
+            bx, by = rel[(g * C + c) % total]   # point on the waist ellipse
+            for r in range(R + 1):
+                t = r / R                       # 0 = waist (top), 1 = hem (bottom)
+                z = zr + (hz - zr) * t
+                s = 1.0 + (hem_scale - 1.0) * t
+                grid[c][r] = bm.verts.new((cx + bx * s, cy + by * s, z))
+            pin_verts.append(grid[c][0])        # pin the whole top row (the waistband)
+        for c in range(C):
+            for r in range(R):
+                bm.faces.new((grid[c][r], grid[c + 1][r],
+                              grid[c + 1][r + 1], grid[c][r + 1]))
+        gores.append(grid)
+    # vertical seams: gore g's right column sews to gore g+1's left column (they start
+    # coincident, so the seam is already closed - the gores are genuinely separate)
+    for g in range(N):
+        right, left = gores[g], gores[(g + 1) % N]
+        for r in range(R + 1):
+            u, v = right[C][r], left[0][r]
+            if u is not v:
+                try:
+                    bm.edges.new((u, v))
+                except ValueError:
+                    pass
+    bm.normal_update()                          # orient every face outward (radially)
+    for f in bm.faces:
+        ctr = f.calc_center_median()
+        if f.normal.x * (ctr.x - cx) + f.normal.y * (ctr.y - cy) < 0:
+            f.normal_flip()
+    bm.verts.index_update()
+    pin_idx = sorted({v.index for v in pin_verts})
+    bm.to_mesh(mesh)
+    bm.free()
+    U.link(obj, collection)
+    for p in mesh.polygons:
+        p.use_smooth = True
+    vg = obj.vertex_groups.new(name="Pin")
+    vg.add(pin_idx, 1.0, 'REPLACE')
+    return obj, "Pin"
 
 
 def build_garment(panels, seams, pins=None, waist=None, name="Garment", collection=None):

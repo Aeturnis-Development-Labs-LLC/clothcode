@@ -137,30 +137,28 @@ def print_measurements(M):
     print(f"stature = {M['stature']:.3f} m", flush=True)
 
 
-def tailor_skirt(M, col, level="navel", ease=0.018, flare=1.6, length=0.48):
-    """Draft a skirt cut to the body: an elliptical waistband at `level` (navel, where
-    a skirt actually sits - lower + rounder than the anatomical waist) + ease, with two
-    flared front/back panels whose top width equals the waistband's front arc (so it
-    sews on without gathering). The navel cross-section is rounder, so a small ease
-    gives a SNUG band that still clears the body (the irregular natural waist needed
-    much more)."""
+def tailor_skirt(M, col, level="navel", ease=0.025, hem_scale=1.6, length=0.48,
+                 gores=8):
+    """Draft a gored skirt cut to the body: an elliptical waistband at `level` (navel,
+    where a skirt actually sits - lower + rounder than the anatomical waist) + ease,
+    and `gores` pre-curved wedge panels flaring to `hem_scale` x the waist ellipse.
+
+    `ease` is a RADIAL offset (metres): the waistband ellipse is (half-width+ease,
+    half-depth+ease). A radial offset strictly ENCLOSES the true cross-section with a
+    uniform clearance - the key property a perimeter-matched ellipse lacks (equal
+    perimeter + different shape means the curves cross, so the body pokes through the
+    pinned waist and traps it). The band is built at the measured torso CENTRE, not the
+    origin (the navel sits ~37mm behind the model origin; ignoring that let the back
+    poke through - the real cause of the earlier explosions). `hem_scale` 1.6 clears
+    the hips (wider than the navel) and spreads the flare evenly over the gores so the
+    fabric drapes smoothly instead of buckling into two folds."""
     L = M[level]
-    wz = L["z"]
-    wa, wb = L["a"] + ease, L["b"] + ease                    # waistband ellipse
-    w = _perimeter(wa, wb) / 2.0                              # panel top = front arc
-    hz = wz - length
-    d = wb + 0.035
-    nu, nv = 40, 30
-    panels = [
-        dict(name="SkirtF", w=w, h=length, res=(nu, nv),
-             center=(0, +d, (wz + hz) / 2), normal="Y", taper=flare),
-        dict(name="SkirtB", w=w, h=length, res=(nu, nv),
-             center=(0, -d, (wz + hz) / 2), normal="Y", taper=flare),
-    ]
-    seams = [((0, "L"), (1, "L")), ((0, "R"), (1, "R"))]
-    skirt, pin = cloth.build_garment(panels, seams, pins=None,
-                                     waist=dict(a=wa, b=wb, z=wz),
-                                     name="Skirt", collection=col)
+    cx, cy = L.get("center", (0.0, 0.0))
+    wa, wb = L["a"] + ease, L["b"] + ease                    # enclosing waistband
+    waist = dict(a=wa, b=wb, z=L["z"], cx=cx, cy=cy)
+    skirt, pin = cloth.build_gored_skirt(waist, length, n_gores=gores,
+                                         hem_scale=hem_scale, name="Skirt",
+                                         collection=col)
     return skirt, pin
 
 
