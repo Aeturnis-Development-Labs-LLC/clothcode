@@ -261,6 +261,27 @@ def tailor_tabard(M, col, ease=0.030, length_frac=0.40):
     return tab, pin
 
 
+def _fit_cord(tab, z, half_z=0.05):
+    """Fit a belt ellipse to the DRAPED tabard at height z: the max |x| and |y| of the
+    settled fabric in a band around z (so the cord rests just outside it, visible all
+    the way round rather than hidden behind the hanging panels)."""
+    import bpy as _bpy
+    dg = _bpy.context.evaluated_depsgraph_get()
+    me = tab.evaluated_get(dg).to_mesh()
+    try:
+        mw = tab.matrix_world
+        pts = [mw @ v.co for v in me.vertices if abs((mw @ v.co).z - z) < half_z]
+    finally:
+        tab.evaluated_get(dg).to_mesh_clear()
+    if not pts:
+        return None
+    cx = sum(p.x for p in pts) / len(pts)
+    cy = sum(p.y for p in pts) / len(pts)
+    a = max(abs(p.x - cx) for p in pts)
+    b = max(abs(p.y - cy) for p in pts)
+    return cx, cy, a, b
+
+
 def _drape_and_gate(garment, pin, settle, label, loose=False):
     """Shared drape recipe + baseline gate for any tailored garment. `loose` relaxes
     the fold/compression bound for draped garments (tabard) that are MEANT to fold."""
@@ -323,7 +344,18 @@ def main():
     if garment == "tabard":
         tab, tpin = tailor_tabard(M, col)
         tab.data.materials.append(flat("Tabard", (0.42, 0.30, 0.17), rough=0.9))
+        # drape the tabard, then lay a decorative cord belt over the waist, FITTED to
+        # the draped fabric so it sits just outside it (a collider belt makes the bake
+        # run away - thin mesh vs draping fabric - so the cord is non-colliding).
+        wz = M["waist"]["z"]
         _drape_and_gate(tab, tpin, settle, "TABARD", loose=True)
+        bpy.context.scene.frame_set(settle)
+        fit = _fit_cord(tab, wz)
+        if fit:
+            fcx, fcy, fa, fb = fit
+            cord = cloth.build_cord(fa + 0.006, fb + 0.006, wz, fcx, fcy,
+                                    tube=0.011, collection=col)
+            cord.data.materials.append(flat("Rope", (0.33, 0.21, 0.09), rough=0.95))
 
     look_z = 0.85 if garment == "skirt" else 1.05
     bpy.context.scene.frame_set(settle)

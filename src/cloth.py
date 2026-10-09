@@ -396,7 +396,8 @@ def build_bodice(levels, z_top, z_hem, z_underarm, z_neck_front, z_neck_back,
 
 
 def build_tabard(z_top, z_hem, half_width, neck_half, cx, cy, depth,
-                 crest_z, z_neck_front=None, yoke=0.06, cols=28, rows=30,
+                 crest_z, z_neck_front=None, yoke=0.06, drop=0.03,
+                 cinch_z=None, cinch_depth=0.10, cinch_width=0.12, cols=28, rows=30,
                  name="Tabard", collection=None):
     """A simple medieval TABARD / poncho: a rectangular front + back panel joined over
     the shoulders by a flat YOKE with a head hole between them, open at the sides,
@@ -419,8 +420,9 @@ def build_tabard(z_top, z_hem, half_width, neck_half, cx, cy, depth,
     bm = bmesh.new()
 
     z_neck_front = z_top if z_neck_front is None else z_neck_front
+    z_edge = crest_z - drop                             # yoke edges sit below the ridge
     pin_verts = []
-    yoke_top = {}                                       # c -> (front_top, back_top) verts
+    yoke_top = {}                                       # c -> (front_edge, back_edge) verts
     panels = {}
     for side, dy, ytop, zneck in (("F", +depth, +yoke, z_neck_front),
                                   ("B", -depth, -yoke, z_top)):
@@ -432,13 +434,12 @@ def build_tabard(z_top, z_hem, half_width, neck_half, cx, cy, depth,
                 frac = r / R                            # 0 = hem, 1 = top
                 if shoulder:                            # drape yoke edge -> flat panel
                     y = (cy + dy) + (cy + ytop - (cy + dy)) * frac
-                    z = z_hem + (crest_z - z_hem) * frac
+                    z = z_hem + (z_edge - z_hem) * frac
                 else:                                   # neck column: flat; front scoops
                     y = cy + dy
                     z = z_hem + (zneck - z_hem) * frac
                 grid[c][r] = bm.verts.new((x, y, z))
             if shoulder:
-                pin_verts.append(grid[c][R])
                 yoke_top.setdefault(c, {})[side] = grid[c][R]
         for c in range(C):
             for r in range(R):
@@ -447,13 +448,39 @@ def build_tabard(z_top, z_hem, half_width, neck_half, cx, cy, depth,
                     bm.faces.new(q)
         panels[side] = grid
 
-    # flat yoke strip over each shoulder: connect the front and back yoke-edge tops
+    # waist cinch: ease the front/back panels IN toward the body at the waist and pin
+    # that row, so a cord belt laid over it sits OUTSIDE the fabric (otherwise the
+    # tabard hangs past the cord and hides it). Only the BODY-BACKED centre columns are
+    # cinched (|x-cx| < cinch_width) - pinning the open side columns yanked the free
+    # side fabric into a hard bar and tore it. The pull is partial (toward cinch_depth
+    # from where the panel hangs) so it gathers rather than creases.
+    if cinch_z is not None:
+        for sign, side in ((+1, "F"), (-1, "B")):
+            grid = panels[side]
+            for c in range(C + 1):
+                x = cx - half_width + 2 * half_width * c / C
+                if abs(x - cx) >= cinch_width:
+                    continue
+                r = min(range(R + 1), key=lambda rr: abs(grid[c][rr].co.z - cinch_z))
+                v = grid[c][r]
+                v.co.y = v.co.y + (cy + sign * cinch_depth - v.co.y) * 0.7
+                pin_verts.append(v)
+
+    # CURVED yoke roof over each shoulder: front edge (low) -> centre ridge (high, on the
+    # crest) -> back edge (low), so it hugs the rounded shoulder instead of being a flat
+    # slab. ONLY the ridge is pinned - the panels drape off the lower edges, so the
+    # shoulders read as soft draped fabric, not a rigid board.
+    ridge = {}
     ys = sorted(c for c in yoke_top if "F" in yoke_top[c] and "B" in yoke_top[c])
+    for c in ys:
+        x = cx - half_width + 2 * half_width * c / C
+        ridge[c] = bm.verts.new((x, cy, crest_z))
+        pin_verts.append(ridge[c])
     for c0, c1 in zip(ys, ys[1:]):
         if c1 != c0 + 1:                                # skip the gap over the neck hole
             continue
-        bm.faces.new((yoke_top[c0]["F"], yoke_top[c1]["F"],
-                      yoke_top[c1]["B"], yoke_top[c0]["B"]))
+        bm.faces.new((yoke_top[c0]["F"], yoke_top[c1]["F"], ridge[c1], ridge[c0]))
+        bm.faces.new((ridge[c0], ridge[c1], yoke_top[c1]["B"], yoke_top[c0]["B"]))
 
     bm.normal_update()
     for f in bm.faces:                                  # front faces +Y, back faces -Y
@@ -469,6 +496,45 @@ def build_tabard(z_top, z_hem, half_width, neck_half, cx, cy, depth,
     vg = obj.vertex_groups.new(name="Pin")
     vg.add(pin_idx, 1.0, 'REPLACE')
     return obj, "Pin"
+
+
+def build_cord(a, b, z, cx, cy, tube=0.012, strands=3, segs=96, sides=8,
+               name="Cord", collection=None):
+    """A rope/cord belt: an elliptical ring (semi-axes a,b at height z, centred cx,cy)
+    with a round tube cross-section, twisted into `strands` so it reads as cord rather
+    than a smooth hose. Returned as a plain mesh - the caller makes it a collider (so a
+    tabard cinches under it) and/or assigns a rope material. Returns the object."""
+    collection = collection or U.get_collection(COL)
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+    bm = bmesh.new()
+    rings = []
+    for i in range(segs):
+        t = TAU * i / segs
+        px, py = cx + a * math.cos(t), cy + b * math.sin(t)
+        tx, ty = -a * math.sin(t), b * math.cos(t)          # tangent along the ring
+        tl = math.hypot(tx, ty) or 1.0
+        nx, ny = ty / tl, -tx / tl                          # in-plane normal (radial-ish)
+        ring = []
+        for j in range(sides):
+            # lobed radius (strands) twisting along the ring -> a corded look
+            aa = TAU * j / sides
+            rr = tube * (1.0 + 0.18 * math.cos(strands * (aa + TAU * i / segs * strands)))
+            ox, oy = math.cos(aa) * rr, math.sin(aa) * rr
+            ring.append(bm.verts.new((px + nx * ox, py + ny * ox, z + oy)))
+        rings.append(ring)
+    for i in range(segs):
+        r0, r1 = rings[i], rings[(i + 1) % segs]
+        for j in range(sides):
+            j2 = (j + 1) % sides
+            bm.faces.new((r0[j], r0[j2], r1[j2], r1[j]))
+    bm.normal_update()
+    bm.to_mesh(mesh)
+    bm.free()
+    U.link(obj, collection)
+    for p in mesh.polygons:
+        p.use_smooth = True
+    return obj
 
 
 def build_garment(panels, seams, pins=None, waist=None, name="Garment", collection=None):
