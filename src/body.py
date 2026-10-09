@@ -268,7 +268,13 @@ def mpfb_body(decimate=0.25, remesh=None, strip_arms=False, pose=None,
         bpy.ops.mpfb.add_standard_rig()
         rig = next(o for o in bpy.data.objects
                    if o.type == 'ARMATURE' and o not in arms0)
-        A = math.radians(74)            # arms out to the sides (c2: Z axis, +L / -R)
+        # The upperarm rest pose points out-and-DOWN ~49deg below horizontal; the bone's
+        # local Z (~global -Y) swings it purely in the vertical X-Z plane, so the raise
+        # angle adds directly to the arm's elevation. 49deg lands the arms STRAIGHT OUT
+        # (true horizontal T): arms parallel to the ground, clearing the torso for
+        # fitting while seating shoulder straps on a flat shoulder shelf. (74deg lifted
+        # them ~25deg ABOVE horizontal, which pulled the deltoid up into the strap line.)
+        A = math.radians(49)            # arms horizontal to the sides (Z axis, +L / -R)
         for side, sign in (("L", 1), ("R", -1)):
             pb = rig.pose.bones["upperarm01." + side]
             pb.rotation_mode = 'XYZ'

@@ -313,11 +313,13 @@ def build_bodice(levels, z_top, z_hem, z_underarm, z_neck_front, z_neck_back,
 
     def top_z(u, z_neck):
         d = abs(u - 0.5)
-        if d < hn:
-            return z_neck
-        if d < hs:
+        if d < hn:                                      # neckline: rounded scoop rising
+            tt = d / hn                                 # from z_neck (centre) to z_top
+            s = tt * tt * (3 - 2 * tt)                  # smoothstep -> no square corner
+            return z_neck + (z_top - z_neck) * s
+        if d < hs:                                      # shoulder strap: flat plateau
             return z_top
-        tt = (d - hs) / (0.5 - hs + 1e-9)               # armhole ramp
+        tt = (d - hs) / (0.5 - hs + 1e-9)               # armhole ramp to the underarm
         return z_top + (z_underarm - z_top) * tt
 
     panels = {}

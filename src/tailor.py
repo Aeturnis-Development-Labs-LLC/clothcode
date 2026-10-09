@@ -74,26 +74,59 @@ def _components(segs, q=0.004):
     return list(comps.values())
 
 
+def _clip_arms(segs, binw=0.02, frac=0.15):
+    """Drop the arm lobes from a torso slice. In a straight-out T-pose the arm and the
+    shoulder are anatomically continuous, so a horizontal slice through the shoulders is
+    ONE contour spanning torso + both arms. But the armpit is a sharp pinch: the
+    front-back depth collapses to ~0 between the torso and each arm. Bin the contour by
+    x, and walk outward from the centre until the local depth drops below `frac` of the
+    max (the armpit) - everything beyond is arm, and is clipped. Clean slices (bust,
+    waist, hip: no arm at that height, no pinch) keep their full width unchanged."""
+    pts = [p for s in segs for p in s]
+    cx = sum(p[0] for p in pts) / len(pts)
+    depth = {}
+    for x, y in pts:
+        k = round((x - cx) / binw)
+        lo, hi = depth.get(k, (1e9, -1e9))
+        depth[k] = (min(lo, y), max(hi, y))
+    d = {k: hi - lo for k, (lo, hi) in depth.items()}
+    thr = frac * max(d.values())
+
+    def walk(step):                                 # last torso bin before the armpit
+        k = 0
+        while (k + step) in d and d[k + step] >= thr:
+            k += step
+        return k
+
+    xlo = cx + (walk(-1) - 1) * binw
+    xhi = cx + (walk(1) + 1) * binw
+    kept = [s for s in segs if xlo <= s[0][0] <= xhi and xlo <= s[1][0] <= xhi]
+    return kept or segs
+
+
 def _torso_section(verts, faces, zc):
     """Measure the TORSO cross-section at z=zc: split the plane-slice into contours,
-    pick the central closed loop (ignoring separate arm/hand loops), and return its
-    TRUE perimeter + half-width + half-depth + centre."""
+    pick the central closed loop (ignoring separate arm/hand loops), clip any arm lobes
+    that are continuous with the torso (T-pose shoulders), and return its TRUE perimeter
+    + half-width + half-depth + centre."""
     comps = _components(_plane_segments(verts, faces, zc))
     if not comps:
         return None
 
-    def stats(c):
+    def center(c):
         pts = [p for s in c for p in s]
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
-        return {"per": sum(math.dist(p0, p1) for p0, p1 in c),
-                "a": (max(xs) - min(xs)) / 2, "b": (max(ys) - min(ys)) / 2,
-                "center": (sum(xs) / len(xs), sum(ys) / len(ys))}
+        return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
 
-    scored = [stats(c) for c in comps]
-    central = [s for s in scored
-               if (s["center"][0] ** 2 + s["center"][1] ** 2) ** 0.5 < 0.15]
-    return max(central or scored, key=lambda s: s["per"])
+    central = [c for c in comps
+               if (center(c)[0] ** 2 + center(c)[1] ** 2) ** 0.5 < 0.15]
+    comp = max(central or comps, key=lambda c: sum(math.dist(*s) for s in c))
+    comp = _clip_arms(comp)
+    pts = [p for s in comp for p in s]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return {"per": sum(math.dist(p0, p1) for p0, p1 in comp),
+            "a": (max(xs) - min(xs)) / 2, "b": (max(ys) - min(ys)) / 2,
+            "center": (sum(xs) / len(xs), sum(ys) / len(ys))}
 
 
 def measure_body(b):
@@ -178,8 +211,12 @@ def tailor_tunic(M, col, ease=0.030):
         levels.append((m["z"], m["a"], m["b"], cx, cy))
     z_top = M["shoulder"]["z"]
     z_hem = M["hip"]["z"]
-    z_underarm = M["bust"]["z"]
-    z_neck_front = z_underarm + 0.55 * (z_top - z_underarm)
+    # Drop the underarm ~60mm below the bust so the side seam closes BELOW the arm
+    # root: with straight-out arms the arm meets the torso right at bust height, so a
+    # seam closed up to the bust gets pinched against the arm (stretch at the armpit).
+    # Closing lower leaves the arm sitting in the open armhole instead.
+    z_underarm = M["bust"]["z"] - 0.09
+    z_neck_front = M["bust"]["z"] + 0.55 * (z_top - M["bust"]["z"])
     z_neck_back = z_top - 0.02
     tunic, pin = cloth.build_bodice(levels, z_top, z_hem, z_underarm,
                                     z_neck_front, z_neck_back, ease=ease,
