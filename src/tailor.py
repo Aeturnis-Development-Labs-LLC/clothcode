@@ -162,6 +162,43 @@ def tailor_skirt(M, col, level="navel", ease=0.025, hem_scale=1.6, length=0.48,
     return skirt, pin
 
 
+def tailor_tunic(M, col, ease=0.030):
+    """Draft a fitted sleeveless bodice (Stage 1 of the tunic): loft the measured
+    hip->waist->bust->shoulder torso ellipses into front/back panels, scoop a round
+    neckline, close the side seams below the underarm, and hang it from pinned shoulder
+    straps. Cap sleeves are added in Stage 2 onto the open armholes.
+
+    The hem sits at the hip (just below the skirt's navel waistband, so it covers it);
+    the underarm is taken at the bust level; the front neckline scoops ~55% of the way
+    from the bust up to the shoulder, the back neckline sits just under the shoulder."""
+    levels = []
+    for name in ("hip", "waist", "bust", "shoulder"):
+        m = M[name]
+        cx, cy = m.get("center", (0.0, 0.0))
+        levels.append((m["z"], m["a"], m["b"], cx, cy))
+    z_top = M["shoulder"]["z"]
+    z_hem = M["hip"]["z"]
+    z_underarm = M["bust"]["z"]
+    z_neck_front = z_underarm + 0.55 * (z_top - z_underarm)
+    z_neck_back = z_top - 0.02
+    tunic, pin = cloth.build_bodice(levels, z_top, z_hem, z_underarm,
+                                    z_neck_front, z_neck_back, ease=ease,
+                                    name="Tunic", collection=col)
+    return tunic, pin
+
+
+def _drape_and_gate(garment, pin, settle, label):
+    """Shared drape recipe + baseline gate for any tailored garment."""
+    drape = dict(cloth.FITTED, self_collision=False, quality=12, collision_quality=8)
+    cl = cloth.add_cloth(garment, pin, drape, sew=True)
+    cloth.bake(garment, cl, settle)
+    rep = clothdiag.baseline(garment, settle, fps=25)
+    ok, text = clothdiag.baseline_verdict(rep)
+    print(text, flush=True)
+    print(f"TAILOR_{label}_GATE", "PASS" if ok else "FAIL")
+    return ok
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 
@@ -172,6 +209,7 @@ def main():
     glb = arg("--glb", None)             # path to an imported body (.glb/.obj/.fbx)
     settle = arg("--settle", 150, int)
     samples = arg("--samples", 18, int)
+    garment = arg("--garment", "skirt")  # skirt | tunic | both
 
     U.clear_scene()
     col = U.get_collection(cloth.COL)
@@ -196,27 +234,26 @@ def main():
         return
 
     print(f"collider verts (remeshed): {len(b['obj'].data.vertices)}", flush=True)
-    skirt, pin = tailor_skirt(M, col)
-    skirt.data.materials.append(flat("Skirt", (0.33, 0.12, 0.40)))
-    # drape recipe: fitted margin but NO self-collision and lower quality - a skirt
+    # drape recipe: fitted margin but NO self-collision and lower quality - a garment
     # draping on a body barely self-intersects, and self-collision is what made the
     # bake pathologically slow against a dense collider.
-    drape = dict(cloth.FITTED, self_collision=False, quality=12, collision_quality=8)
-    cl = cloth.add_cloth(skirt, pin, drape, sew=True)
-    cloth.bake(skirt, cl, settle)
+    if garment in ("skirt", "both"):
+        skirt, spin = tailor_skirt(M, col)
+        skirt.data.materials.append(flat("Skirt", (0.33, 0.12, 0.40)))
+        _drape_and_gate(skirt, spin, settle, "SKIRT")
+    if garment in ("tunic", "both"):
+        tunic, tpin = tailor_tunic(M, col)
+        tunic.data.materials.append(flat("Tunic", (0.18, 0.34, 0.52)))
+        _drape_and_gate(tunic, tpin, settle, "TUNIC")
 
-    rep = clothdiag.baseline(skirt, settle, fps=25)
-    ok, text = clothdiag.baseline_verdict(rep)
-    print(text, flush=True)
-    print("TAILOR_SKIRT_GATE", "PASS" if ok else "FAIL")
-
+    look_z = 0.85 if garment == "skirt" else 1.05
     bpy.context.scene.frame_set(settle)
     U.add_ground(size=20, material=flat("Floor", (0.16, 0.16, 0.19), 0.9))
     U.setup_solid_world(color=(0.52, 0.55, 0.62), strength=1.0)
     U.add_sun(rotation_deg=(54, 0, 32), strength=2.8, angle_deg=3)
     U.add_sun(rotation_deg=(60, 0, -118), strength=0.8, angle_deg=5)
-    U.add_camera(location=(1.9, -2.3, 0.95), look_at=(0, 0, 0.85), lens=50)
-    out = os.path.join(os.path.dirname(HERE), "renders", "body", "tailor_skirt.png")
+    U.add_camera(location=(1.9, -2.3, 1.15), look_at=(0, 0, look_z), lens=50)
+    out = os.path.join(os.path.dirname(HERE), "renders", "body", f"tailor_{garment}.png")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     U.setup_render(out, res=(620, 820), samples=samples, exposure=-0.3, look='AgX - Punchy')
     U.render()

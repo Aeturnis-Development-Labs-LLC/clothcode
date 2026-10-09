@@ -272,6 +272,118 @@ def build_gored_skirt(waist, length, n_gores=8, hem_scale=1.6, cols=5, rows=26,
     return obj, "Pin"
 
 
+def build_bodice(levels, z_top, z_hem, z_underarm, z_neck_front, z_neck_back,
+                 ease=0.02, hn=0.13, hs=0.33, cols=24, rows=22,
+                 name="Bodice", collection=None):
+    """A fitted sleeveless bodice lofted from the measured torso cross-sections.
+
+    Like the gored skirt it is pre-curved to the body loft (so it starts in-shape),
+    but as a torso tube split into a front (+Y) and back (-Y) panel that follow the
+    hip->waist->bust->shoulder ellipses. The top edge is SHAPED per column by its
+    position u=c/C across the front arc (0 = left side, 0.5 = centre-front, 1 = right
+    side), measured as d=|u-0.5|:
+        d < hn           neckline  - scooped down to z_neck (front lower, back higher)
+        hn <= d < hs     shoulder  - full height to z_top; F sews to B (shoulder seam)
+        d >= hs          armhole   - top ramps from z_top down to z_underarm; the side
+                                     seam closes only BELOW the underarm, leaving the
+                                     armhole open above for a sleeve.
+    The garment hangs from the pinned shoulder straps (they rest on the shoulders,
+    offset out by `ease` so they clear the collider). Front/back meet coincident at the
+    two side points, so the side seams start closed. Returns (obj, "Pin").
+
+    levels: ascending-z list of (z, a, b, cx, cy) torso ellipses (semi-axes + centre).
+    """
+    collection = collection or U.get_collection(COL)
+    C, R = cols, rows
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+    bm = bmesh.new()
+
+    def loft(z):
+        ls = levels
+        if z <= ls[0][0]:
+            return ls[0][1:]
+        if z >= ls[-1][0]:
+            return ls[-1][1:]
+        for i in range(1, len(ls)):
+            if z <= ls[i][0]:
+                z0, z1 = ls[i - 1][0], ls[i][0]
+                t = (z - z0) / (z1 - z0)
+                return tuple(p + (q - p) * t for p, q in zip(ls[i - 1][1:], ls[i][1:]))
+
+    def top_z(u, z_neck):
+        d = abs(u - 0.5)
+        if d < hn:
+            return z_neck
+        if d < hs:
+            return z_top
+        tt = (d - hs) / (0.5 - hs + 1e-9)               # armhole ramp
+        return z_top + (z_underarm - z_top) * tt
+
+    panels = {}
+    for side, a0, a1, z_neck in (("F", math.pi, 0.0, z_neck_front),
+                                 ("B", math.pi, 2 * math.pi, z_neck_back)):
+        grid = [[None] * (R + 1) for _ in range(C + 1)]
+        for r in range(R + 1):
+            z = z_hem + (z_top - z_hem) * (r / R)
+            a, b, cx, cy = loft(z)
+            arc = _ellipse_arc(a + ease, b + ease, a0, a1, C)
+            for c in range(C + 1):
+                if z <= top_z(c / C, z_neck) + 1e-6:
+                    bx, by = arc[c]
+                    grid[c][r] = bm.verts.new((cx + bx, cy + by, z))
+        for c in range(C):
+            for r in range(R):
+                q = [grid[c][r], grid[c + 1][r], grid[c + 1][r + 1], grid[c][r + 1]]
+                if all(q):
+                    bm.faces.new(q)
+        panels[side] = grid
+    F, B = panels["F"], panels["B"]
+
+    def top_vert(grid, c):
+        for r in range(R, -1, -1):
+            if grid[c][r] is not None:
+                return grid[c][r]
+        return None
+
+    pin_verts = []
+    for c in range(C + 1):                              # shoulder straps -> pins
+        d = abs(c / C - 0.5)
+        if hn <= d < hs:
+            # Pin the front and back strap tops at the shoulder (they rest on the
+            # shoulder, offset out by ease). Do NOT sew front-to-back here: at a
+            # torso-level slice the front (+Y) and back (-Y) strap verts are ~80mm
+            # apart with the shoulder/neck between them, so a sewing spring would drag
+            # them together straight THROUGH the body and the solver never settles.
+            # The pins hold each side up independently (a tank-strap shoulder).
+            pin_verts += [v for v in (top_vert(F, c), top_vert(B, c)) if v is not None]
+    for c in (0, C):                                    # side seams below the underarm
+        for r in range(R + 1):
+            z = z_hem + (z_top - z_hem) * (r / R)
+            if z <= z_underarm + 1e-6 and F[c][r] and B[c][r] and F[c][r] is not B[c][r]:
+                try:
+                    bm.edges.new((F[c][r], B[c][r]))
+                except ValueError:
+                    pass
+
+    bm.normal_update()
+    for f in bm.faces:
+        ctr = f.calc_center_median()
+        _a, _b, cx, cy = loft(ctr.z)
+        if f.normal.x * (ctr.x - cx) + f.normal.y * (ctr.y - cy) < 0:
+            f.normal_flip()
+    bm.verts.index_update()
+    pin_idx = sorted({v.index for v in pin_verts})
+    bm.to_mesh(mesh)
+    bm.free()
+    U.link(obj, collection)
+    for p in mesh.polygons:
+        p.use_smooth = True
+    vg = obj.vertex_groups.new(name="Pin")
+    vg.add(pin_idx, 1.0, 'REPLACE')
+    return obj, "Pin"
+
+
 def build_garment(panels, seams, pins=None, waist=None, name="Garment", collection=None):
     """Sew a garment from flat 2D panels (the general, pattern-based builder).
 
