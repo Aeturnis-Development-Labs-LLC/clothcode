@@ -159,11 +159,14 @@ def _girth(verts, zc, band=0.025, torso_cut=0.28):
     return max(abs(v[0]) for v in sl), max(abs(v[1]) for v in sl)
 
 
-def prep_collider(obj, decimate=0.25, collection=None, make_collider=True):
-    """Turn an existing body mesh (real-world scale, Z-up, feet ~z=0) into a light
-    cloth collider: decimate, force OUTWARD normals (else cloth sucks inward),
-    add COLLISION. Returns the ansur_body()-shaped anchor dict with waist/hip read
-    off the geometry."""
+def prep_collider(obj, decimate=0.25, remesh=None, strip_arms=False,
+                  collection=None, make_collider=True):
+    """Turn an existing body mesh (real-world scale, Z-up, feet ~z=0) into a cloth
+    collider: optionally strip out-stretched arms + voxel-remesh into a watertight
+    smooth shell (`remesh` = voxel size in m), force OUTWARD normals, add COLLISION.
+    A voxel remesh is the right collider for FITTED/sewn garments: smooth (the sim
+    settles) and closed (the penetration metric's inside-test works). Returns the
+    ansur_body()-shaped anchor dict with waist/hip read off the geometry."""
     collection = collection or U.get_collection("Body")
     for c in list(obj.users_collection):
         c.objects.unlink(obj)
@@ -172,14 +175,32 @@ def prep_collider(obj, decimate=0.25, collection=None, make_collider=True):
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
     # MakeHuman meshes carry shape keys (morphs) + maybe subsurf; bake them into a
-    # static mesh so Decimate can be applied (can't apply over shape keys)
+    # static mesh so a modifier can be applied (can't apply over shape keys)
     for md in list(obj.modifiers):
         if md.type in ('SUBSURF', 'MULTIRES'):
             obj.modifiers.remove(md)
     if obj.data.shape_keys:
         bpy.ops.object.convert(target='MESH')
         obj = bpy.context.view_layer.objects.active
-    if decimate and decimate < 1.0:
+    if strip_arms:
+        # delete verts beyond a torso radius above the hip (the A-pose arms); the
+        # voxel remesh below then closes the holes into a clean armless shell
+        co = [v.co for v in obj.data.vertices]
+        z0s = min(c.z for c in co)
+        Hs = max(c.z for c in co) - z0s
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        doomed = [v for v in bm.verts
+                  if (v.co.x ** 2 + v.co.y ** 2) ** 0.5 > 0.23 and v.co.z > z0s + 0.55 * Hs]
+        bmesh.ops.delete(bm, geom=doomed, context='VERTS')
+        bm.to_mesh(obj.data)
+        bm.free()
+    if remesh:
+        rm = obj.modifiers.new("Remesh", 'REMESH')
+        rm.mode = 'VOXEL'
+        rm.voxel_size = remesh
+        bpy.ops.object.modifier_apply(modifier=rm.name)   # watertight closed shell
+    elif decimate and decimate < 1.0:
         dm = obj.modifiers.new("Decimate", 'DECIMATE')
         dm.ratio = decimate
         bpy.ops.object.modifier_apply(modifier=dm.name)
@@ -205,9 +226,13 @@ def prep_collider(obj, decimate=0.25, collection=None, make_collider=True):
     }
 
 
-def mpfb_body(decimate=0.25, collection=None, make_collider=True):
+def mpfb_body(decimate=0.25, remesh=None, strip_arms=False, pose=None,
+              collection=None, make_collider=True):
     """Create an anatomical human with MPFB2 (must be installed) and prep it as a
-    collider. The cloth is still 100% simulated - this is the (asset) mannequin."""
+    collider. pose='tpose' raises the arms to a T-pose (the universal garment-fitting
+    pose - clears the hands from the waist and sets up for sleeves) by posing the rig
+    and baking it into the mesh. The cloth is still 100% simulated; this is the asset
+    mannequin."""
     import addon_utils
     for mod in ('bl_ext.user_default.mpfb', 'mpfb'):
         try:
@@ -224,8 +249,29 @@ def mpfb_body(decimate=0.25, collection=None, make_collider=True):
         if o is not human:
             bpy.data.objects.remove(o, do_unlink=True)
     human.name = "Body_mpfb"
-    return prep_collider(human, decimate=decimate, collection=collection,
-                         make_collider=make_collider)
+
+    rig = None
+    if pose == 'tpose':
+        bpy.ops.object.select_all(action='DESELECT')
+        human.select_set(True)
+        bpy.context.view_layer.objects.active = human
+        arms0 = {o for o in bpy.data.objects if o.type == 'ARMATURE'}
+        bpy.ops.mpfb.add_standard_rig()
+        rig = next(o for o in bpy.data.objects
+                   if o.type == 'ARMATURE' and o not in arms0)
+        A = math.radians(74)            # arms out to the sides (c2: Z axis, +L / -R)
+        for side, sign in (("L", 1), ("R", -1)):
+            pb = rig.pose.bones["upperarm01." + side]
+            pb.rotation_mode = 'XYZ'
+            pb.rotation_euler = (0, 0, sign * A)
+        bpy.context.view_layer.update()
+
+    result = prep_collider(human, decimate=decimate, remesh=remesh,
+                           strip_arms=strip_arms, collection=collection,
+                           make_collider=make_collider)   # convert() bakes the pose
+    if rig is not None:
+        bpy.data.objects.remove(rig, do_unlink=True)
+    return result
 
 
 def load_body(filepath, height=1.70, decimate=0.25, up='Y',

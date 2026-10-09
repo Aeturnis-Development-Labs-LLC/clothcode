@@ -63,15 +63,17 @@ def print_measurements(M):
     print(f"stature = {M['stature']:.3f} m", flush=True)
 
 
-def tailor_skirt(M, col, ease=0.012, flare=1.55, length=0.50):
+def tailor_skirt(M, col, ease=0.030, flare=1.55, length=0.50):
     """Draft a skirt cut to the waist measurement: an elliptical waistband sized to
     the body's waist + ease, two flared front/back panels whose top width equals
-    the waistband's front arc (so it sews on without gathering)."""
+    the waistband's front arc (so it sews on without gathering). `ease` must clear
+    the body everywhere - a real waist isn't a clean ellipse, so a too-tight band
+    dips inside the belly/spine and the pin gets trapped there (never settles)."""
     wz = M["waist"]["z"]
     wa, wb = M["waist"]["a"] + ease, M["waist"]["b"] + ease   # waistband ellipse
     w = _perimeter(wa, wb) / 2.0                              # panel top = front arc
     hz = wz - length
-    d = wb + 0.02
+    d = wb + 0.04
     nu, nv = 40, 30
     panels = [
         dict(name="SkirtF", w=w, h=length, res=(nu, nv),
@@ -98,8 +100,11 @@ def main():
 
     U.clear_scene()
     col = U.get_collection(cloth.COL)
-    # a smooth collider (little decimation) so the fitted margin doesn't poke through
-    b = (body.mpfb_body(decimate=0.7, collection=col) if model == "mpfb"
+    # T-pose the figure (arms out - the garment-fitting pose; keeps the hands clear
+    # of the waist without touching the geometry), then voxel-remesh the full closed
+    # human into a watertight smooth shell (smooth -> sewn garment settles; closed ->
+    # the penetration metric is valid).
+    b = (body.mpfb_body(remesh=0.02, pose='tpose', collection=col) if model == "mpfb"
          else body.ansur_body("F", 50, collection=col))
     for p in b["parts"]:
         p.data.materials.append(flat("Skin", (0.80, 0.56, 0.44), 0.6))
@@ -110,23 +115,14 @@ def main():
         print("MEASURE_DONE")
         return
 
-    # strip the out-stretched arms from the collider: the A-pose hands hang at hip
-    # height and otherwise collide with (and snag) the skirt. A skirt only needs
-    # the torso + legs.
-    obj = b["obj"]
-    bm = bmesh.new()
-    bm.from_mesh(obj.data)
-    z_cut = M["hip"]["z"] + 0.03
-    doomed = [v for v in bm.verts
-              if (v.co.x ** 2 + v.co.y ** 2) ** 0.5 > 0.23 and v.co.z > z_cut]
-    bmesh.ops.delete(bm, geom=doomed, context='VERTS')
-    bm.to_mesh(obj.data)
-    bm.free()
-    print(f"stripped arms: removed {len(doomed)} verts above z={z_cut:.2f}", flush=True)
-
+    print(f"collider verts (remeshed): {len(b['obj'].data.vertices)}", flush=True)
     skirt, pin = tailor_skirt(M, col)
     skirt.data.materials.append(flat("Skirt", (0.33, 0.12, 0.40)))
-    cl = cloth.add_cloth(skirt, pin, cloth.FITTED, sew=True)
+    # drape recipe: fitted margin but NO self-collision and lower quality - a skirt
+    # draping on a body barely self-intersects, and self-collision is what made the
+    # bake pathologically slow against a dense collider.
+    drape = dict(cloth.FITTED, self_collision=False, quality=12, collision_quality=8)
+    cl = cloth.add_cloth(skirt, pin, drape, sew=True)
     cloth.bake(skirt, cl, settle)
 
     rep = clothdiag.baseline(skirt, settle, fps=25)

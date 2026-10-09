@@ -76,19 +76,28 @@ def _eval_positions(obj):
         eo.to_mesh_clear()
 
 
-def _inside(bvh, point, direction=Vector((0.5773, 0.5774, 0.5773))):
-    """Robust inside test: a ray from `point` crosses a closed mesh an odd
-    number of times iff the point is inside. Beats nearest-face-normal, which
-    misclassifies near sharp edges / end-caps."""
-    origin = point.copy()
-    crossings = 0
-    for _ in range(16):
-        loc, nrm, idx, dist = bvh.ray_cast(origin, direction)
-        if loc is None:
-            break
-        crossings += 1
-        origin = loc + direction * 1e-4
-    return crossings % 2 == 1
+_RAY_DIRS = [Vector(v).normalized() for v in (
+    (0.577, 0.577, 0.577), (-0.577, 0.577, -0.577), (0.577, -0.577, -0.577),
+    (-0.577, -0.577, 0.577), (0.0, 0.0, -1.0))]
+
+
+def _inside(bvh, point, directions=_RAY_DIRS):
+    """Inside test by MAJORITY VOTE over several ray directions: a ray crosses a
+    closed mesh an odd number of times iff the point is inside. A single ray can be
+    fooled when it grazes a sharp feature (a T-pose arm, a mesh cavity), so we vote
+    over several directions - robust on imperfect anatomical colliders."""
+    votes = 0
+    for d in directions:
+        origin = point.copy()
+        crossings = 0
+        for _ in range(16):
+            loc, nrm, idx, dist = bvh.ray_cast(origin, d)
+            if loc is None:
+                break
+            crossings += 1
+            origin = loc + d * 1e-4
+        votes += (crossings % 2 == 1)
+    return votes * 2 > len(directions)
 
 
 def _collider_bvh(objs):
